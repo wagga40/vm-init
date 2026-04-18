@@ -12,6 +12,7 @@ A highly opinionated, config-driven tool for provisioning Ubuntu machines. It re
 |--------|------|
 | **apt** | Fish shell, editors, build tools, CLI utilities, dev tools |
 | **ufw** | Firewall — deny incoming, allow outgoing, permit listed services |
+| **fail2ban** | Brute-force defense — bans offending IPs (SSH jail on by default, UFW-aware) |
 | **dns** | DNS privacy via dnsproxy (DoH/DoT) with systemd-resolved |
 | **docker** | Docker engine + compose plugin |
 | **python** | pdm, poetry, uv, pre-commit via pipx |
@@ -166,6 +167,46 @@ github_releases:
       binary: tool
       arch_map: { amd64: x86_64, arm64: arm64 }
 ```
+
+## Fail2ban
+
+The `fail2ban` module installs [fail2ban](https://github.com/fail2ban/fail2ban) and writes a managed drop-in at `/etc/fail2ban/jail.d/vm-init.local`. By default the SSH jail is enabled with a 1-hour ban after 5 failed attempts in 10 minutes, and the ban action auto-detects UFW when present (falling back to `iptables-multiport`).
+
+```yaml
+fail2ban:
+  enabled: true
+  backend: systemd
+  bantime: 1h
+  findtime: 10m
+  maxretry: 5
+  banaction: auto        # auto | ufw | iptables-multiport | nftables-multiport | ...
+  ignoreip:
+    - 127.0.0.1/8
+    - ::1
+  jails:
+    sshd:
+      enabled: true
+```
+
+| Key | Purpose |
+|-----|---------|
+| `backend` | Log source (`systemd` is recommended on modern Ubuntu) |
+| `bantime` / `findtime` | Ban duration and sliding window (accepts `10m`, `1h`, `1d`, …) |
+| `maxretry` | Failures allowed in `findtime` before a ban |
+| `banaction` | `auto` chooses `ufw` when UFW is installed, else `iptables-multiport` |
+| `ignoreip` | CIDRs never banned |
+| `jails.sshd.enabled` | Toggle the SSH jail |
+
+Inspect at runtime:
+
+```bash
+systemctl status fail2ban
+sudo fail2ban-client status
+sudo fail2ban-client status sshd
+journalctl -u fail2ban -n 50 --no-pager
+```
+
+Edits to `/etc/fail2ban/jail.d/vm-init.local` are overwritten on the next run — put persistent customizations in your own file (e.g. `jail.d/99-local.local`) or tweak `vm-init.yml` and re-run.
 
 ## DNS (DoH/DoT)
 

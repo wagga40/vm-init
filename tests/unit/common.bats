@@ -190,10 +190,10 @@ teardown() {
 }
 
 @test "log_section: accepts optional progress argument" {
-  run log_section "apt" "1/8"
+  run log_section "apt" "1/9"
   [ "$status" -eq 0 ]
   [[ "$output" == *"apt"* ]]
-  [[ "$output" == *"1/8"* ]]
+  [[ "$output" == *"1/9"* ]]
 }
 
 @test "log_section: works with single argument (backward compat)" {

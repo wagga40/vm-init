@@ -90,7 +90,7 @@ log_done()  { echo -e "${_C_BRIGHT_GREEN}${_C_BOLD}${_SYM_OK}${_C_RESET} ${_C_BO
 
 # Module section header with an optional progress fragment rendered dim.
 #   log_section "apt"            → ━━━ apt ━━━
-#   log_section "apt" "1/8"      → ━━━ apt  1/8 ━━━
+#   log_section "apt" "1/9"      → ━━━ apt  1/9 ━━━
 log_section() {
   local title="$1" progress="${2:-}"
   echo ""

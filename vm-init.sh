@@ -222,6 +222,7 @@ VM_INIT_START_TS=$(date +%s)
 VM_INIT_MODULES=(
   "apt:apt.sh:install_apt"
   "ufw:ufw.sh:install_ufw"
+  "fail2ban:fail2ban.sh:install_fail2ban"
   "dns:dns.sh:install_dns"
   "docker:docker.sh:install_docker"
   "python:python.sh:install_python"
@@ -271,7 +272,7 @@ usage() {
   _usage_opt "--help, -h"         "Show this help"
 
   print_help_section "Modules:"
-  echo "  apt, ufw, dns, docker, python, github_tools, github_releases, shell"
+  echo "  apt, ufw, fail2ban, dns, docker, python, github_tools, github_releases, shell"
 
   print_help_section "Status legend:"
   print_status_legend
@@ -626,6 +627,21 @@ validate_config() {
     done
   fi
 
+  if [[ "$(yq_get '.fail2ban.enabled' true "$CONFIG")" == "true" ]]; then
+    val=$(yq_get '.fail2ban.maxretry' 5 "$CONFIG")
+    if ! [[ "$val" =~ ^[0-9]+$ ]] || (( val < 1 )); then
+      log_fail "fail2ban.maxretry must be a positive integer: got '$val'"
+      errors=$((errors + 1))
+    fi
+    val=$(yq_get '.fail2ban.banaction' "auto" "$CONFIG")
+    case "$val" in
+      ""|*" "*)
+        log_fail "fail2ban.banaction must be a simple action name (no spaces): got '$val'"
+        errors=$((errors + 1))
+        ;;
+    esac
+  fi
+
   if [[ "$(yq_get '.github_releases.enabled' true "$CONFIG")" == "true" ]]; then
     count=$(yq '.github_releases.generic // [] | length' "$CONFIG")
     for ((i = 0; i < count; i++)); do
@@ -687,6 +703,16 @@ dry_run_preview() {
       outgoing=$(yq '.ufw.defaults.outgoing // "allow"' "$CONFIG")
       rules=$(yq '.ufw.allow[]? // ""' "$CONFIG" | paste -sd',' -)
       _dry_run_line "Would configure ufw: incoming=${_C_BOLD}${incoming}${_C_RESET}, outgoing=${_C_BOLD}${outgoing}${_C_RESET}, allow=[${_C_BOLD}${rules}${_C_RESET}]"
+      ;;
+    fail2ban)
+      local f2b_bantime f2b_maxretry f2b_banaction f2b_jails
+      f2b_bantime=$(yq_get '.fail2ban.bantime' "1h" "$CONFIG")
+      f2b_maxretry=$(yq_get '.fail2ban.maxretry' "5" "$CONFIG")
+      f2b_banaction=$(yq_get '.fail2ban.banaction' "auto" "$CONFIG")
+      f2b_jails=$(yq '.fail2ban.jails // {} | to_entries | .[] | select(.value.enabled == true) | .key' "$CONFIG" 2>/dev/null | paste -sd',' -)
+      _dry_run_line "Would install ${_C_BOLD}fail2ban${_C_RESET} and enable its service"
+      _dry_run_line "Policy:       bantime=${_C_BOLD}${f2b_bantime}${_C_RESET}, maxretry=${_C_BOLD}${f2b_maxretry}${_C_RESET}, banaction=${_C_BOLD}${f2b_banaction}${_C_RESET}"
+      _dry_run_line "Active jails: ${_C_BOLD}${f2b_jails:-<none>}${_C_RESET}"
       ;;
     dns)
       local server port

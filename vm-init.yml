@@ -25,6 +25,20 @@ ufw:
   allow:
     - OpenSSH
 
+fail2ban:
+  enabled: true
+  backend: systemd
+  bantime: 1h
+  findtime: 10m
+  maxretry: 5
+  banaction: auto
+  ignoreip:
+    - 127.0.0.1/8
+    - ::1
+  jails:
+    sshd:
+      enabled: true
+
 dns:
   enabled: true
   server: https://base.dns.mullvad.net/dns-query

@@ -54,9 +54,9 @@ teardown() {
   grep -q '^export VM_INIT_BUNDLED_VERSION=' "$BUNDLE"
 }
 
-@test "build-single: bundle embeds all 8 install_ entry functions" {
-  for fn in install_apt install_ufw install_dns install_docker install_python \
-            install_github_tools install_github_releases install_shell; do
+@test "build-single: bundle embeds all 9 install_ entry functions" {
+  for fn in install_apt install_ufw install_fail2ban install_dns install_docker \
+            install_python install_github_tools install_github_releases install_shell; do
     grep -q "^${fn}() {" "$BUNDLE" \
       || { echo "missing entry: $fn"; return 1; }
   done
@@ -114,7 +114,7 @@ teardown() {
   cd "$TEST_TMPDIR"
   run "$BUNDLE" --list-modules
   [ "$status" -eq 0 ]
-  for mod in apt ufw dns docker python github_tools github_releases shell; do
+  for mod in apt ufw fail2ban dns docker python github_tools github_releases shell; do
     [[ "$output" == *"$mod"* ]] || { echo "missing: $mod"; echo "$output"; return 1; }
   done
 }
@@ -128,7 +128,7 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"DRY RUN"* ]]
   [[ "$output" == *"Dry run complete"* ]]
-  [[ "$output" == *"ok: 8"* ]]
+  [[ "$output" == *"ok: 9"* ]]
 }
 
 @test "bundle: explicit --config overrides embedded default" {
@@ -136,11 +136,12 @@ teardown() {
     skip "yq v4 (mikefarah) not installed"
   fi
   # Build a config where only dns is enabled. The embedded default has all
-  # 8 modules enabled, so we'd see a very different ok/skipped count.
+  # 9 modules enabled, so we'd see a very different ok/skipped count.
   user_cfg="$TEST_TMPDIR/only-dns.yml"
   cat > "$user_cfg" <<'YAML'
 apt: {enabled: false}
 ufw: {enabled: false}
+fail2ban: {enabled: false}
 dns: {enabled: true, server: "https://base.dns.mullvad.net/dns-query", listen_port: 5353}
 docker: {enabled: false}
 python: {enabled: false}
@@ -152,7 +153,7 @@ YAML
   run "$BUNDLE" --dry-run --config "$user_cfg"
   [ "$status" -eq 0 ]
   [[ "$output" == *"ok: 1"* ]]
-  [[ "$output" == *"skipped: 7"* ]]
+  [[ "$output" == *"skipped: 8"* ]]
 }
 
 @test "bundle: ./vm-init.yml overrides embedded default when --config is omitted" {
@@ -169,6 +170,7 @@ YAML
   cat > "$cwd_cfg" <<'YAML'
 apt: {enabled: false}
 ufw: {enabled: false}
+fail2ban: {enabled: false}
 dns: {enabled: true, server: "https://base.dns.mullvad.net/dns-query", listen_port: 5353}
 docker: {enabled: false}
 python: {enabled: false}
@@ -181,7 +183,7 @@ YAML
   run "$BUNDLE" --dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"ok: 1"* ]]
-  [[ "$output" == *"skipped: 7"* ]]
+  [[ "$output" == *"skipped: 8"* ]]
 }
 
 @test "bundle: explicit --config with missing file errors (no silent fallback)" {
@@ -243,7 +245,7 @@ YAML
   [ "$status" -eq 0 ]
   run "$BUNDLE" --dry-run --config "${workdir}/vm-init.yml"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"ok: 8"* ]]
+  [[ "$output" == *"ok: 9"* ]]
 }
 
 @test "bundle: --only unknown errors with clear message" {
@@ -268,5 +270,5 @@ YAML
   cd "$empty_dir"
   run ./vm-init --dry-run
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
-  [[ "$output" == *"ok: 8"* ]]
+  [[ "$output" == *"ok: 9"* ]]
 }

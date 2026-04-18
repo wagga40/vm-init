@@ -67,6 +67,15 @@ ufw:
     incoming: deny
     outgoing: allow
   allow: []
+fail2ban:
+  enabled: true
+  bantime: 1h
+  findtime: 10m
+  maxretry: 5
+  banaction: auto
+  jails:
+    sshd:
+      enabled: true
 dns:
   enabled: true
   server: https://base.dns.mullvad.net/dns-query

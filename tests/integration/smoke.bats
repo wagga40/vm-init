@@ -159,10 +159,10 @@ SH
 
 # ---------- --list-modules ----------
 
-@test "--list-modules prints all 8 modules" {
+@test "--list-modules prints all 9 modules" {
   run "$VM_INIT_SH" --list-modules --config "$CONFIG"
   [ "$status" -eq 0 ]
-  for mod in apt ufw dns docker python github_tools github_releases shell; do
+  for mod in apt ufw fail2ban dns docker python github_tools github_releases shell; do
     [[ "$output" == *"$mod"* ]] || { echo "missing: $mod"; echo "$output"; return 1; }
   done
 }
@@ -224,6 +224,7 @@ SH
   cat > "$cwd_config" <<'YAML'
 apt: {enabled: false}
 ufw: {enabled: false}
+fail2ban: {enabled: false}
 dns: {enabled: true, server: "https://base.dns.mullvad.net/dns-query", listen_port: 5353}
 docker: {enabled: false}
 python: {enabled: false}
@@ -236,7 +237,7 @@ YAML
   run "$VM_INIT_SH" --dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"ok: 1"* ]]
-  [[ "$output" == *"skipped: 7"* ]]
+  [[ "$output" == *"skipped: 8"* ]]
 }
 
 @test "--dry-run does not write to /var/log" {
@@ -252,7 +253,7 @@ YAML
   run "$VM_INIT_SH" --dry-run --only dns --config "$CONFIG"
   [ "$status" -eq 0 ]
   [[ "$output" == *"ok: 1"* ]]
-  [[ "$output" == *"skipped: 7"* ]]
+  [[ "$output" == *"skipped: 8"* ]]
 }
 
 @test "--skip excludes modules" {
@@ -272,7 +273,7 @@ YAML
   run "$VM_INIT_SH" --dry-run --only apt,dns --config "$CONFIG"
   [ "$status" -eq 0 ]
   [[ "$output" == *"ok: 2"* ]]
-  [[ "$output" == *"skipped: 6"* ]]
+  [[ "$output" == *"skipped: 7"* ]]
 }
 
 # ---------- config validation ----------

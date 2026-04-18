@@ -192,6 +192,7 @@ jobs:
               cli: [jq]
               extra: []
           ufw: {enabled: false}
+          fail2ban: {enabled: false}
           dns: {enabled: false}
           docker: {enabled: false}
           python: {enabled: false}
