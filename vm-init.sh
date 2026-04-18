@@ -3,7 +3,15 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve script directory, following symlinks so sourcing works whether we're
+# invoked as /opt/vm-init/vm-init.sh or via the /usr/local/sbin/vm-init symlink
+# that install.sh creates.
+_self="$0"
+if command -v readlink >/dev/null 2>&1; then
+  _self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
+unset _self
 MODULES_DIR="${SCRIPT_DIR}/modules"
 SCRIPT_NAME="$(basename "$0")"
 
