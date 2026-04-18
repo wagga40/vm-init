@@ -106,6 +106,9 @@ jobs:
     container:
       image: ubuntu:24.04
       options: --privileged
+    defaults:
+      run:
+        shell: bash
     env:
       DEBIAN_FRONTEND: noninteractive
       TZ: UTC
