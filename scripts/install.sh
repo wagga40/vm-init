@@ -69,7 +69,7 @@ usage() {
 
   _section "Options:"
   _opt "--version <tag>"       "Release tag to install. Default: latest"
-  _opt "--prefix <dir>"        "Install directory (default: /opt/vm-init)"
+  _opt "--prefix <dir>"        "Install directory (managed default: /opt/vm-init)"
   _opt "--no-symlink"          "Skip creating symlinks under /usr/local/sbin"
   _opt "--help, -h"            "Show this help"
 
@@ -198,5 +198,5 @@ if [[ "$VM_INIT_NO_SYMLINK" != "1" ]]; then
 else
   printf "  ${_C_DIM}%-18s${_C_RESET} ${_C_CYAN}%s${_C_RESET}\n" "Run:" "sudo ${VM_INIT_PREFIX}/vm-init.sh"
 fi
-printf "  ${_C_DIM}%-18s${_C_RESET} %s\n" "Custom config:" "Create /etc/vm-init/vm-init.yml (takes precedence over the default)"
+printf "  ${_C_DIM}%-18s${_C_RESET} %s\n" "Custom config:" "Use --config, or place vm-init.yml in cwd (/etc/vm-init/vm-init.yml still wins)"
 printf "  ${_C_DIM}%-18s${_C_RESET} ${_C_CYAN}%s${_C_RESET}\n" "Preview first:" "sudo vm-init --dry-run"

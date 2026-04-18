@@ -36,14 +36,17 @@ if ! declare -F _emit_default_config >/dev/null 2>&1; then
   }
 fi
 
-# System-wide override takes precedence over the default config shipped with
-# the installation. Users edit /etc/vm-init/vm-init.yml to customize without
-# their changes being clobbered on upgrade. Override explicitly with --config.
-# Single-file bundles fall back to an embedded default (see _emit_default_config)
-# when neither file is present.
+# Config precedence (without --config):
+#   1) /etc/vm-init/vm-init.yml (system-wide override)
+#   2) ./vm-init.yml (project/local override in current directory)
+#   3) <script dir>/vm-init.yml (default shipped with tarball install)
+#   4) embedded default (single-file bundle fallback)
+# Override everything explicitly with --config.
 CONFIG_EXPLICIT=0
 if [[ -f "/etc/vm-init/vm-init.yml" ]]; then
   CONFIG="/etc/vm-init/vm-init.yml"
+elif [[ -f "$(pwd)/vm-init.yml" ]]; then
+  CONFIG="$(pwd)/vm-init.yml"
 else
   CONFIG="${SCRIPT_DIR}/vm-init.yml"
 fi
@@ -58,10 +61,149 @@ else
 fi
 export VM_INIT_VERSION
 
+: "${VM_INIT_UPDATE_REPO:=wagga40/vm-init}"
+: "${VM_INIT_UPDATE_CHECK:=1}"
+VM_INIT_UPDATE_API_URL="https://api.github.com/repos/${VM_INIT_UPDATE_REPO}/releases/latest"
+VM_INIT_UPDATE_DOWNLOAD_URL="https://github.com/${VM_INIT_UPDATE_REPO}/releases/latest/download/vm-init"
+
+detect_run_mode() {
+  if [[ "${VM_INIT_BUNDLED:-0}" == "1" ]]; then
+    echo "bundled_single_file"
+    return 0
+  fi
+  if [[ "$SCRIPT_DIR" == "/opt/vm-init" || "$SCRIPT_DIR" == "/opt/vm-init/"* ]]; then
+    echo "installed_tarball"
+    return 0
+  fi
+  echo "local_checkout"
+}
+
+normalize_semver() {
+  local raw="${1#v}"
+  raw="${raw%%-*}"
+  if [[ "$raw" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "$raw"
+    return 0
+  fi
+  return 1
+}
+
+is_version_newer() {
+  local latest local_ver
+  local latest_norm local_norm
+  local lmaj lmin lpatch cmaj cmin cpatch
+
+  latest="$1"
+  local_ver="$2"
+
+  latest_norm=$(normalize_semver "$latest") || return 1
+  local_norm=$(normalize_semver "$local_ver") || return 1
+
+  IFS='.' read -r lmaj lmin lpatch <<< "$latest_norm"
+  IFS='.' read -r cmaj cmin cpatch <<< "$local_norm"
+
+  if (( lmaj > cmaj )); then return 0; fi
+  if (( lmaj < cmaj )); then return 1; fi
+  if (( lmin > cmin )); then return 0; fi
+  if (( lmin < cmin )); then return 1; fi
+  if (( lpatch > cpatch )); then return 0; fi
+  return 1
+}
+
+latest_release_version() {
+  local response tag
+
+  if [[ -n "${VM_INIT_UPDATE_LATEST_OVERRIDE:-}" ]]; then
+    echo "$VM_INIT_UPDATE_LATEST_OVERRIDE"
+    return 0
+  fi
+
+  [[ "${VM_INIT_UPDATE_CHECK}" == "1" ]] || return 1
+  command -v curl >/dev/null 2>&1 || return 1
+
+  response="$(curl -fsSL --max-time 4 "$VM_INIT_UPDATE_API_URL" 2>/dev/null || true)"
+  [[ -n "$response" ]] || return 1
+
+  tag="$(printf '%s' "$response" | tr -d '\n' | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')"
+  [[ -n "$tag" ]] || return 1
+  echo "$tag"
+}
+
+print_update_notice_if_needed() {
+  local latest
+
+  [[ "${VM_INIT_UPDATE_CHECK}" == "1" ]] || return 0
+  latest="$(latest_release_version || true)"
+  [[ -n "$latest" ]] || return 0
+  is_version_newer "$latest" "$VM_INIT_VERSION" || return 0
+
+  echo ""
+  log_info "New vm-init version available."
+  echo -e "  ${_C_DIM}Current:${_C_RESET} ${_C_BOLD}${VM_INIT_VERSION}${_C_RESET}"
+  echo -e "  ${_C_DIM}Latest:${_C_RESET}  ${_C_BOLD}${latest#v}${_C_RESET}"
+  echo -e "  ${_C_DIM}Download:${_C_RESET} ${_C_CYAN}${VM_INIT_UPDATE_DOWNLOAD_URL}${_C_RESET}"
+
+  case "${VM_INIT_RUN_MODE}" in
+    installed_tarball)
+      echo -e "  ${_C_DIM}Tip:${_C_RESET} run ${_C_CYAN}sudo ${SCRIPT_NAME} --update${_C_RESET} to refresh /opt/vm-init."
+      ;;
+    bundled_single_file|local_checkout)
+      echo -e "  ${_C_DIM}Tip:${_C_RESET} download the latest release asset or update your checkout before the next run."
+      ;;
+  esac
+}
+
+run_update_cmd() {
+  local latest installer
+  latest="$(latest_release_version || true)"
+
+  case "${VM_INIT_RUN_MODE}" in
+    installed_tarball)
+      installer="${SCRIPT_DIR}/scripts/install.sh"
+      if [[ ! -f "$installer" ]]; then
+        log_fail "Installer not found: ${installer}"
+        return 1
+      fi
+      if [[ $EUID -ne 0 ]]; then
+        log_fail "Update in install mode requires root. Re-run with: sudo ${SCRIPT_NAME} --update"
+        return 1
+      fi
+      log_step "Updating vm-init installation under /opt/vm-init"
+      if [[ -n "$latest" ]]; then
+        log_info "Latest available release: ${latest#v}"
+      fi
+      bash "$installer" --prefix /opt/vm-init
+      return $?
+      ;;
+    bundled_single_file)
+      echo ""
+      echo -e "${_C_BOLD}vm-init update${_C_RESET} (${_C_CYAN}single-file mode${_C_RESET})"
+      [[ -n "$latest" ]] && echo -e "  ${_C_DIM}Latest:${_C_RESET} ${_C_BOLD}${latest#v}${_C_RESET}"
+      echo -e "  Download: ${_C_CYAN}${VM_INIT_UPDATE_DOWNLOAD_URL}${_C_RESET}"
+      echo -e "  Replace the current binary (example):"
+      echo -e "    ${_C_CYAN}curl -fsSL ${VM_INIT_UPDATE_DOWNLOAD_URL} -o /usr/local/sbin/vm-init${_C_RESET}"
+      echo -e "    ${_C_CYAN}sudo chmod +x /usr/local/sbin/vm-init${_C_RESET}"
+      return 0
+      ;;
+    local_checkout|*)
+      echo ""
+      echo -e "${_C_BOLD}vm-init update${_C_RESET} (${_C_CYAN}local checkout mode${_C_RESET})"
+      [[ -n "$latest" ]] && echo -e "  ${_C_DIM}Latest:${_C_RESET} ${_C_BOLD}${latest#v}${_C_RESET}"
+      echo -e "  Download: ${_C_CYAN}${VM_INIT_UPDATE_DOWNLOAD_URL}${_C_RESET}"
+      echo -e "  Update this checkout with git or install the managed release under /opt/vm-init:"
+      echo -e "    ${_C_CYAN}curl -fsSL https://raw.githubusercontent.com/${VM_INIT_UPDATE_REPO}/main/scripts/install.sh | sudo bash${_C_RESET}"
+      return 0
+      ;;
+  esac
+}
+
+VM_INIT_RUN_MODE="$(detect_run_mode)"
+
 export VM_INIT_FORCE=0
 export VM_INIT_VERBOSE=0
 export VM_INIT_NO_LOG=0
 export VM_INIT_DRY_RUN=0
+VM_INIT_DO_UPDATE=0
 VM_INIT_LIST_MODULES=0
 VM_INIT_WRITE_DEFAULT_CONFIG=0
 VM_INIT_ONLY=""
@@ -102,15 +244,16 @@ usage() {
 
   print_help_section "Options:"
   echo -e "  ${_C_DIM}Selection${_C_RESET}"
-  _usage_opt "--config <path>"    "Config file (default: /etc/vm-init/vm-init.yml or sibling vm-init.yml)"
+  _usage_opt "--config, -c <path>"    "Config file (default: /etc/vm-init/vm-init.yml, then ./vm-init.yml, then sibling vm-init.yml)"
   _usage_opt "--only <list>"      "Comma-separated module names to run (others skipped)"
   _usage_opt "--skip <list>"      "Comma-separated module names to exclude"
-  _usage_opt "--list-modules"     "Print modules with enabled/disabled state and exit"
-  _usage_opt "--write-default-config" "Write embedded default to ./vm-init.yml in the current directory and exit"
+  _usage_opt "--list-modules, -l"     "Print modules with enabled/disabled state and exit"
+  _usage_opt "--write-default-config, -w" "Write embedded default to ./vm-init.yml in the current directory and exit"
   echo ""
   echo -e "  ${_C_DIM}Execution${_C_RESET}"
   _usage_opt "--dry-run"          "Preview: show each module's actions, no changes"
-  _usage_opt "--force"            "Reinstall/overwrite all tools"
+  _usage_opt "--update, -u"           "Update vm-init (mode-aware behavior)"
+  _usage_opt "--force, -f"            "Reinstall/overwrite all tools"
   _usage_opt "--verbose"          "Show full command output (default: quiet)"
   echo ""
   echo -e "  ${_C_DIM}Logging${_C_RESET}"
@@ -147,13 +290,14 @@ usage() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --config)                 CONFIG="$2"; CONFIG_EXPLICIT=1; shift 2 ;;
+    --config|-c)             CONFIG="$2"; CONFIG_EXPLICIT=1; shift 2 ;;
     --only)                   VM_INIT_ONLY="$2"; shift 2 ;;
     --skip)                   VM_INIT_SKIP="$2"; shift 2 ;;
     --dry-run)                export VM_INIT_DRY_RUN=1; shift ;;
-    --list-modules)           VM_INIT_LIST_MODULES=1; shift ;;
-    --write-default-config)   VM_INIT_WRITE_DEFAULT_CONFIG=1; shift ;;
-    --force)                  export VM_INIT_FORCE=1; shift ;;
+    --update|-u)             VM_INIT_DO_UPDATE=1; shift ;;
+    --list-modules|-l)       VM_INIT_LIST_MODULES=1; shift ;;
+    --write-default-config|-w) VM_INIT_WRITE_DEFAULT_CONFIG=1; shift ;;
+    --force|-f)              export VM_INIT_FORCE=1; shift ;;
     --verbose)                export VM_INIT_VERBOSE=1; shift ;;
     --no-log)                 export VM_INIT_NO_LOG=1; shift ;;
     --log-file)               LOG_FILE="$2"; shift 2 ;;
@@ -187,6 +331,13 @@ validate_module_filters() {
 
 if ! validate_module_filters; then
   exit 1
+fi
+
+if [[ "$VM_INIT_DO_UPDATE" == "1" ]]; then
+  if ! run_update_cmd; then
+    exit 1
+  fi
+  exit 0
 fi
 
 # ---------------------------------------------------------------------------
@@ -365,6 +516,8 @@ print_banner() {
 }
 
 print_banner
+
+print_update_notice_if_needed
 
 if [[ "$VM_INIT_DRY_RUN" == "1" ]]; then
   echo ""

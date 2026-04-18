@@ -23,7 +23,7 @@ Each module can be toggled on/off or customized in `vm-init.yml`.
 
 ## Install
 
-Two install paths are published with every release: a **single-file bundle** (recommended, simplest) and the classic **tarball** (retains the full repo layout on disk).
+Two install paths are published with every release: a **single-file bundle** (recommended, simplest) and the classic **tarball** (retains the full repo layout on disk). The managed install layout is standardized on `/opt/vm-init` (plus `/usr/local/sbin/vm-init` symlink when enabled).
 
 ### Single-file bundle (recommended)
 
@@ -31,8 +31,7 @@ One self-contained shell script with `_common.sh`, all modules, and the default 
 
 ```bash
 # Download and pin to /usr/local/sbin
-curl -fsSL https://github.com/wagga40/vm-init/releases/latest/download/vm-init \
-  -o /usr/local/sbin/vm-init
+curl -fsSL https://github.com/wagga40/vm-init/releases/latest/download/vm-init -o /usr/local/sbin/vm-init
 sudo chmod +x /usr/local/sbin/vm-init
 
 # Preview and run with the embedded default config
@@ -41,13 +40,13 @@ sudo vm-init
 
 # (Optional) materialize the default config next to you so you can edit it
 vm-init --write-default-config             # writes ./vm-init.yml (no sudo needed)
-$EDITOR vm-init.yml
+vi vm-init.yml
 sudo vm-init --config "$(pwd)/vm-init.yml" # run with your edits
 # ...or promote it to a standard location so future runs auto-pick-up:
 sudo install -Dm 0644 vm-init.yml /etc/vm-init/vm-init.yml
 ```
 
-The bundle runs with the embedded default when no `/etc/vm-init/vm-init.yml` and no `--config` are supplied, so a bare `sudo vm-init` works immediately — customize only when you want to.
+The bundle runs with the embedded default when no `/etc/vm-init/vm-init.yml`, no `./vm-init.yml`, and no `--config` are supplied, so a bare `sudo vm-init` works immediately — customize only when you want to.
 
 ### Tarball
 
@@ -67,29 +66,79 @@ sudo vm-init --dry-run   # preview
 sudo vm-init             # execute
 ```
 
+### Local checkout
+
+For development or testing, you can run `vm-init` directly from a cloned repository—no installation needed:
+
+```bash
+git clone https://github.com/wagga40/vm-init.git
+cd vm-init
+
+# Preview actions using the default config
+sudo ./vm-init.sh --dry-run
+
+# Run with the default or a custom config
+sudo ./vm-init.sh
+sudo ./vm-init.sh --config ./vm-init.yml
+
+# Write out the default config for editing
+./vm-init.sh --write-default-config
+vi vm-init.yml
+sudo ./vm-init.sh --config ./vm-init.yml
+```
+
+**Notes:**
+- This mode runs entirely from your current working directory and does not install binaries or modify `/opt/vm-init` or `/usr/local/sbin`.
+- Updates are manual—just pull the latest changes from the repository.
+- When run from a local checkout, `--update` will print upgrade instructions but won’t change your files.
+- This is ideal for contributing, debugging, or running on ephemeral/dev VMs without installing system-wide.
+- All modules and helpers are loaded from the repository without requiring a special build step.
+
+
 ## Usage
 
 ```bash
 sudo vm-init                          # full run with default config
 sudo vm-init --dry-run                # preview every module's actions, no changes
-sudo vm-init --list-modules           # table of modules + enabled state
-vm-init --write-default-config        # write embedded default to ./vm-init.yml (no sudo)
+sudo vm-init --list-modules           # table of modules + enabled state (or: -l)
+sudo vm-init --update                 # mode-aware update action or guidance (or: -u)
+vm-init --write-default-config        # write embedded default to ./vm-init.yml (or: -w)
 sudo vm-init --only dns               # run just the DNS module (e.g. after recovery)
 sudo vm-init --skip docker,github_releases
-sudo vm-init --config /path/to.yml    # custom config
-sudo vm-init --force                  # reinstall everything
+sudo vm-init --config /path/to.yml    # custom config (or: -c /path/to.yml)
+sudo vm-init --force                  # reinstall everything (or: -f)
 sudo vm-init --verbose                # stream full command output
 sudo vm-init --log-file /tmp/run.log  # custom log path (default: /var/log/vm-init-<ts>.log)
 ```
 
 By default every run mirrors stdout/stderr to `/var/log/vm-init-<timestamp>.log`. Pass `--no-log` to disable. Every run prints a structured summary at the end (ok / skipped / warned / failed counts).
 
+### Update behavior and run modes
+
+`vm-init` detects how it is being run and adapts update behavior:
+
+- **Installed mode (`/opt/vm-init`)**: `sudo vm-init --update` re-runs the bundled installer path and keeps the managed layout in `/opt/vm-init`.
+- **Single-file mode**: `vm-init --update` prints the download link plus replacement commands for `/usr/local/sbin/vm-init`.
+- **Local checkout mode** (for example `sudo ./vm-init.sh`): `vm-init --update` prints a newer-version link and guidance without mutating your working tree.
+
+During normal runs, `vm-init` also performs a best-effort latest-release check and only prints a message when a newer version is available.
+
+### Running from a checkout
+
+Local execution remains supported and unchanged:
+
+```bash
+sudo ./vm-init.sh --dry-run
+sudo ./vm-init.sh --config ./vm-init.yml
+```
+
 ### Config precedence
 
 1. `--config <path>` (explicit override)
 2. `/etc/vm-init/vm-init.yml` (system-wide override — survives upgrades)
-3. `<script dir>/vm-init.yml` (default shipped with the tarball installation)
-4. Embedded default YAML inlined in the single-file bundle (materialized to a
+3. `./vm-init.yml` (local/project override in the current directory)
+4. `<script dir>/vm-init.yml` (default shipped with the tarball installation)
+5. Embedded default YAML inlined in the single-file bundle (materialized to a
    temp file when neither of the above exists, no-op for the tarball install)
 
 ## Configuration

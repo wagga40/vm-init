@@ -80,10 +80,23 @@ teardown() {
   run "$BUNDLE" --help
   [ "$status" -eq 0 ]
   [[ "$output" == *"--config"* ]]
+  [[ "$output" == *"--config, -c"* ]]
   [[ "$output" == *"--list-modules"* ]]
+  [[ "$output" == *"--list-modules, -l"* ]]
+  [[ "$output" == *"--update"* ]]
+  [[ "$output" == *"--update, -u"* ]]
   [[ "$output" == *"--dry-run"* ]]
   [[ "$output" == *"--write-default-config"* ]]
+  [[ "$output" == *"--write-default-config, -w"* ]]
+  [[ "$output" == *"--force, -f"* ]]
   [[ "$output" == *"Modules:"* ]]
+}
+
+@test "bundle: --update prints bundled-mode guidance and download link" {
+  run "$BUNDLE" --update
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"single-file mode"* ]]
+  [[ "$output" == *"https://github.com/wagga40/vm-init/releases/latest/download/vm-init"* ]]
 }
 
 @test "bundle: --version prints the baked-in version" {
@@ -137,6 +150,35 @@ shell: {enabled: false}
 YAML
   cd "$TEST_TMPDIR"
   run "$BUNDLE" --dry-run --config "$user_cfg"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ok: 1"* ]]
+  [[ "$output" == *"skipped: 7"* ]]
+}
+
+@test "bundle: ./vm-init.yml overrides embedded default when --config is omitted" {
+  if ! command -v yq >/dev/null 2>&1; then
+    skip "yq v4 (mikefarah) not installed"
+  fi
+  if [[ -f /etc/vm-init/vm-init.yml ]]; then
+    skip "/etc/vm-init/vm-init.yml exists and has higher precedence"
+  fi
+
+  workdir="$TEST_TMPDIR/cwd-default"
+  mkdir -p "$workdir"
+  cwd_cfg="${workdir}/vm-init.yml"
+  cat > "$cwd_cfg" <<'YAML'
+apt: {enabled: false}
+ufw: {enabled: false}
+dns: {enabled: true, server: "https://base.dns.mullvad.net/dns-query", listen_port: 5353}
+docker: {enabled: false}
+python: {enabled: false}
+github_tools: {enabled: false}
+github_releases: {enabled: false}
+shell: {enabled: false}
+YAML
+
+  cd "$workdir"
+  run "$BUNDLE" --dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"ok: 1"* ]]
   [[ "$output" == *"skipped: 7"* ]]

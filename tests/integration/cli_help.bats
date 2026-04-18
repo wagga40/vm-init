@@ -26,6 +26,7 @@ setup() {
   [[ "$output" == *"skipped"* ]]
   [[ "$output" == *"completed with warnings"* ]]
   [[ "$output" == *"module failed"* ]]
+  [[ "$output" == *"--update"* ]]
 }
 
 @test "vm-init --help groups options under selection/execution/logging/info" {

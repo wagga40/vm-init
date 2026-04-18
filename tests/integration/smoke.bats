@@ -26,11 +26,30 @@ teardown() {
   [[ "$output" == *"--skip"* ]]
   [[ "$output" == *"--dry-run"* ]]
   [[ "$output" == *"--list-modules"* ]]
+  [[ "$output" == *"--list-modules, -l"* ]]
+  [[ "$output" == *"--update"* ]]
+  [[ "$output" == *"--update, -u"* ]]
   [[ "$output" == *"--write-default-config"* ]]
+  [[ "$output" == *"--write-default-config, -w"* ]]
   [[ "$output" == *"--force"* ]]
+  [[ "$output" == *"--force, -f"* ]]
+  [[ "$output" == *"--config, -c"* ]]
   [[ "$output" == *"--verbose"* ]]
   [[ "$output" == *"--no-log"* ]]
   [[ "$output" == *"Examples:"* ]]
+}
+
+@test "--update in local checkout mode prints guidance and download link" {
+  run "$VM_INIT_SH" --update
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"local checkout mode"* ]]
+  [[ "$output" == *"https://github.com/wagga40/vm-init/releases/latest/download/vm-init"* ]]
+}
+
+@test "-u is an alias for --update" {
+  run "$VM_INIT_SH" -u
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"local checkout mode"* ]]
 }
 
 @test "-h is an alias for --help" {
@@ -43,6 +62,13 @@ teardown() {
   run "$VM_INIT_SH" --version
   [ "$status" -eq 0 ]
   [[ "$output" == "vm-init "* ]]
+}
+
+@test "--version skips update check notice" {
+  VM_INIT_UPDATE_LATEST_OVERRIDE="9.9.9" run "$VM_INIT_SH" --version
+  [ "$status" -eq 0 ]
+  [[ "$output" == "vm-init "* ]]
+  [[ "$output" != *"New vm-init version available"* ]]
 }
 
 @test "unknown flag exits 1 with usage" {
@@ -77,6 +103,15 @@ teardown() {
   grep -q '^# pre-existing$' "${workdir}/vm-init.yml"
 }
 
+@test "-w is an alias for --write-default-config" {
+  workdir="$TEST_TMPDIR/writecfg3"
+  mkdir -p "$workdir"
+  cd "$workdir"
+  run "$VM_INIT_SH" -w
+  [ "$status" -eq 0 ]
+  [ -f "${workdir}/vm-init.yml" ]
+}
+
 # ---------- --list-modules ----------
 
 @test "--list-modules prints all 8 modules" {
@@ -85,6 +120,12 @@ teardown() {
   for mod in apt ufw dns docker python github_tools github_releases shell; do
     [[ "$output" == *"$mod"* ]] || { echo "missing: $mod"; echo "$output"; return 1; }
   done
+}
+
+@test "-l and -c are aliases for --list-modules and --config" {
+  run "$VM_INIT_SH" -l -c "$CONFIG"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Modules"* ]]
 }
 
 @test "--list-modules marks disabled modules as off" {
@@ -104,6 +145,53 @@ teardown() {
   [[ "$output" == *"DRY RUN"* ]]
   [[ "$output" == *"Dry run complete"* ]]
   [[ "$output" == *"Summary"* ]]
+}
+
+@test "-f is an alias for --force" {
+  run "$VM_INIT_SH" -f --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--force, -f"* ]]
+}
+
+@test "--dry-run prints update notice when newer release is known" {
+  VM_INIT_UPDATE_LATEST_OVERRIDE="9.9.9" run "$VM_INIT_SH" --dry-run --config "$CONFIG"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"New vm-init version available"* ]]
+  [[ "$output" == *"Current:"* ]]
+  [[ "$output" == *"Latest:"* ]]
+  [[ "$output" == *"https://github.com/wagga40/vm-init/releases/latest/download/vm-init"* ]]
+}
+
+@test "--list-modules skips update check notice" {
+  VM_INIT_UPDATE_LATEST_OVERRIDE="9.9.9" run "$VM_INIT_SH" --list-modules --config "$CONFIG"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"New vm-init version available"* ]]
+}
+
+@test "--dry-run auto-picks ./vm-init.yml before the shipped default" {
+  if [[ -f /etc/vm-init/vm-init.yml ]]; then
+    skip "/etc/vm-init/vm-init.yml exists and has higher precedence"
+  fi
+
+  workdir="$TEST_TMPDIR/cwd-config"
+  mkdir -p "$workdir"
+  cwd_config="${workdir}/vm-init.yml"
+  cat > "$cwd_config" <<'YAML'
+apt: {enabled: false}
+ufw: {enabled: false}
+dns: {enabled: true, server: "https://base.dns.mullvad.net/dns-query", listen_port: 5353}
+docker: {enabled: false}
+python: {enabled: false}
+github_tools: {enabled: false}
+github_releases: {enabled: false}
+shell: {enabled: false}
+YAML
+
+  cd "$workdir"
+  run "$VM_INIT_SH" --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ok: 1"* ]]
+  [[ "$output" == *"skipped: 7"* ]]
 }
 
 @test "--dry-run does not write to /var/log" {
