@@ -91,7 +91,7 @@ jobs:
             echo ""
             echo '```bash'
             echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/scripts/install.sh \\"
-            echo "  | sudo VM_INIT_REPO=${GITHUB_REPOSITORY} VM_INIT_VERSION=${tag} bash"
+            echo "  | sudo VM_INIT_VERSION=${tag} bash"
             echo '```'
             echo ""
             echo "### Checksums"
