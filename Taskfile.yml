@@ -1,0 +1,109 @@
+version: "3"
+
+vars:
+  DIST_DIR: dist
+  PACKAGE_NAME: vm-init
+  VERSION:
+    sh: |
+      if [ -f VERSION ]; then
+        cat VERSION | tr -d '[:space:]'
+      elif command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "0.0.0-dev.g$(git rev-parse --short HEAD)"
+      else
+        echo "0.0.0-dev"
+      fi
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  version:
+    desc: Print the current version
+    cmds:
+      - echo "{{.VERSION}}"
+
+  package:
+    desc: Package vm-init into a versioned tarball with sha256 checksum
+    cmds:
+      - |
+        set -euo pipefail
+        stage="{{.DIST_DIR}}/{{.PACKAGE_NAME}}-{{.VERSION}}"
+        tarball="{{.DIST_DIR}}/{{.PACKAGE_NAME}}-{{.VERSION}}.tar.gz"
+
+        rm -rf "$stage" "$tarball" "$tarball.sha256"
+        mkdir -p "$stage"
+
+        cp vm-init.sh vm-init.yml VERSION "$stage/"
+        cp -r modules "$stage/"
+        cp -r scripts "$stage/"
+        [ -d examples ] && cp -r examples "$stage/" || true
+        [ -f README.md ] && cp README.md "$stage/" || true
+        [ -f LICENSE ]   && cp LICENSE   "$stage/" || true
+
+        export COPYFILE_DISABLE=1
+        tar czf "$tarball" --no-xattrs -C "{{.DIST_DIR}}" "$(basename "$stage")"
+        rm -rf "$stage"
+
+        # Emit portable sha256 (works with both GNU sha256sum and BSD shasum)
+        if command -v sha256sum >/dev/null 2>&1; then
+          (cd "{{.DIST_DIR}}" && sha256sum "$(basename "$tarball")") > "$tarball.sha256"
+        else
+          (cd "{{.DIST_DIR}}" && shasum -a 256 "$(basename "$tarball")") > "$tarball.sha256"
+        fi
+
+        echo ""
+        echo "Packaged: $tarball"
+        echo "Checksum: $(cat "$tarball.sha256")"
+        echo ""
+        echo "To deploy on a target machine:"
+        echo "  tar xzf $(basename "$tarball")"
+        echo "  cd {{.PACKAGE_NAME}}-{{.VERSION}} && sudo ./vm-init.sh"
+
+  verify:
+    desc: Verify the latest packaged tarball against its sha256 file
+    cmds:
+      - |
+        set -euo pipefail
+        tarball="{{.DIST_DIR}}/{{.PACKAGE_NAME}}-{{.VERSION}}.tar.gz"
+        [ -f "$tarball" ] || { echo "No tarball at $tarball (run 'task package' first)"; exit 1; }
+        [ -f "$tarball.sha256" ] || { echo "No checksum at $tarball.sha256"; exit 1; }
+        cd "{{.DIST_DIR}}"
+        if command -v sha256sum >/dev/null 2>&1; then
+          sha256sum -c "$(basename "$tarball").sha256"
+        else
+          shasum -a 256 -c "$(basename "$tarball").sha256"
+        fi
+
+  build-single:
+    desc: Build the single-file bundle (dist/vm-init-<version>)
+    cmds:
+      - |
+        set -euo pipefail
+        bundle="{{.DIST_DIR}}/{{.PACKAGE_NAME}}-{{.VERSION}}"
+        rm -f "$bundle" "$bundle.sha256"
+        mkdir -p "{{.DIST_DIR}}"
+        scripts/build-single.sh "{{.DIST_DIR}}"
+
+  verify-single:
+    desc: Verify the latest single-file bundle against its sha256 file
+    cmds:
+      - |
+        set -euo pipefail
+        bundle="{{.DIST_DIR}}/{{.PACKAGE_NAME}}-{{.VERSION}}"
+        [ -f "$bundle" ] || { echo "No bundle at $bundle (run 'task build-single' first)"; exit 1; }
+        [ -f "$bundle.sha256" ] || { echo "No checksum at $bundle.sha256"; exit 1; }
+        cd "{{.DIST_DIR}}"
+        if command -v sha256sum >/dev/null 2>&1; then
+          sha256sum -c "$(basename "$bundle").sha256"
+        else
+          shasum -a 256 -c "$(basename "$bundle").sha256"
+        fi
+        bash -n "$(basename "$bundle")"
+        echo "Syntax OK"
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - rm -rf {{.DIST_DIR}}

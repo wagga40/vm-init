@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag="${{ github.event.inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify VERSION matches tag
+        run: |
+          set -euo pipefail
+          version_in_file=$(tr -d '[:space:]' < VERSION)
+          expected="${{ steps.tag.outputs.version }}"
+          if [[ "$version_in_file" != "$expected" ]]; then
+            echo "::error::VERSION file says '${version_in_file}' but tag is '${{ steps.tag.outputs.tag }}' (expected '$expected')"
+            exit 1
+          fi
+
+      - name: Install Task
+        run: |
+          curl -fsSL https://taskfile.dev/install.sh | sudo sh -s -- -b /usr/local/bin
+
+      - name: Build tarball
+        run: task package
+
+      - name: Build single-file bundle
+        run: task build-single
+
+      - name: Summarize artifacts
+        run: |
+          ls -la dist/
+          cat dist/vm-init-${{ steps.tag.outputs.version }}.tar.gz.sha256
+          cat dist/vm-init-${{ steps.tag.outputs.version }}.sha256
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.tag }}"
+          version="${{ steps.tag.outputs.version }}"
+          tarball="dist/vm-init-${version}.tar.gz"
+          tarball_sha="${tarball}.sha256"
+          bundle="dist/vm-init-${version}"
+          bundle_sha="${bundle}.sha256"
+
+          notes_file=$(mktemp)
+          {
+            echo "## vm-init ${tag}"
+            echo ""
+            echo "### Install (single-file, recommended)"
+            echo ""
+            echo '```bash'
+            echo "curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/vm-init-${version} \\"
+            echo "  -o /usr/local/sbin/vm-init && sudo chmod +x /usr/local/sbin/vm-init"
+            echo "sudo vm-init --dry-run                  # preview with the embedded default"
+            echo "sudo vm-init                            # run"
+            echo ""
+            echo "# Optional: materialize the default config so you can edit it."
+            echo "vm-init --write-default-config          # writes ./vm-init.yml (no sudo)"
+            echo "sudo vm-init --config \"\$(pwd)/vm-init.yml\""
+            echo '```'
+            echo ""
+            echo "### Install (tarball, legacy)"
+            echo ""
+            echo '```bash'
+            echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/scripts/install.sh \\"
+            echo "  | sudo VM_INIT_REPO=${GITHUB_REPOSITORY} VM_INIT_VERSION=${tag} bash"
+            echo '```'
+            echo ""
+            echo "### Checksums"
+            echo ""
+            echo '```'
+            cat "$tarball_sha"
+            cat "$bundle_sha"
+            echo '```'
+          } > "$notes_file"
+
+          assets=("$tarball" "$tarball_sha" "$bundle" "$bundle_sha")
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${assets[@]}" --clobber
+          else
+            gh release create "$tag" "${assets[@]}" \
+              --title "vm-init ${tag}" \
+              --notes-file "$notes_file"
+          fi

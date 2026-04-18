@@ -1,0 +1,160 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint (shellcheck + bash -n)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+
+      - name: Collect shell files
+        id: files
+        run: |
+          set -euo pipefail
+          existing=()
+          for p in vm-init.sh modules scripts tests; do
+            [[ -e "$p" ]] && existing+=("$p")
+          done
+          {
+            echo 'files<<EOF'
+            find "${existing[@]}" -type f -name '*.sh' | sort
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: bash -n (syntax check)
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            if ! bash -n "$f"; then
+              echo "::error file=$f::bash -n failed"
+              fail=1
+            fi
+          done <<< "${{ steps.files.outputs.files }}"
+          exit "$fail"
+
+      - name: shellcheck
+        run: |
+          set -euo pipefail
+          mapfile -t targets <<< "${{ steps.files.outputs.files }}"
+          filtered=()
+          for f in "${targets[@]}"; do
+            [[ -n "$f" ]] && filtered+=("$f")
+          done
+          if [[ ${#filtered[@]} -eq 0 ]]; then
+            echo "No shell files found"
+            exit 0
+          fi
+          shellcheck --external-sources --source-path=modules "${filtered[@]}"
+
+  yamllint:
+    name: Lint YAML
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install yamllint
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq yamllint
+      - name: yamllint
+        run: |
+          yamllint -d '{extends: relaxed, rules: {line-length: disable}}' \
+            vm-init.yml .github/workflows/
+
+  unit-tests:
+    name: Unit tests (bats)
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bats
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bats jq
+
+      - name: Run bats unit tests
+        run: |
+          if [[ -d tests/unit ]] && compgen -G 'tests/unit/*.bats' > /dev/null; then
+            bats tests/unit
+          else
+            echo "No unit tests yet"
+          fi
+
+  integration-tests:
+    name: Integration smoke tests
+    # Runs in a privileged Ubuntu container so the suite matches the target
+    # environment (Ubuntu 24.04) and so future tests that call root-only
+    # tools (apt, systemctl, ufw, etc.) can execute without host drift.
+    runs-on: ubuntu-latest
+    needs: lint
+    container:
+      image: ubuntu:24.04
+      options: --privileged
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      TZ: UTC
+      # Ensure /usr/local/bin is on PATH for yq/task installed below.
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    steps:
+      - name: Install container prerequisites
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            bash coreutils findutils sed grep gawk tar gzip xz-utils \
+            curl ca-certificates git sudo \
+            bats jq
+
+      - uses: actions/checkout@v4
+
+      - name: Install yq (mikefarah v4)
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --connect-timeout 10 \
+            -o /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Install go-task (for packaging round-trip)
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --connect-timeout 10 \
+            https://taskfile.dev/install.sh | sh -s -- -d -b /usr/local/bin
+          task --version
+
+      - name: Run bats integration smoke tests
+        run: |
+          set -euo pipefail
+          if [[ -d tests/integration ]] && compgen -G 'tests/integration/*.bats' > /dev/null; then
+            bats --print-output-on-failure tests/integration
+          else
+            echo "No integration tests yet"
+          fi
+
+      - name: Upload vm-init log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vm-init-integration-logs
+          path: |
+            /var/log/vm-init-*.log
+            dist/
+          if-no-files-found: ignore
+          retention-days: 7

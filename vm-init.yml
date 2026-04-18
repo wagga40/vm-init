@@ -1,0 +1,77 @@
+# vm-init.yml — configuration for vm-init.sh
+# Sensible defaults for an opinionated Ubuntu dev machine.
+
+apt:
+  enabled: true
+  packages:
+    shell: [fish]
+    editor: [vim, neovim]
+    build: [build-essential, git, curl, wget]
+    system: [htop, ca-certificates, gnupg, lsb-release]
+    archive: [p7zip-full, unzip, fastfetch]
+    cli: [bat, lsd, tree, jq, yq, fzf, ripgrep, fd-find, procs, du-dust, duf, hyperfine, tealdeer]
+    python: [python3-pip, python3-venv, pipx]
+    dev: [shellcheck, direnv, sqlite3, postgresql-client, tmux, moreutils]
+    test: [bats]
+    vpn: [wireguard]
+    extra: []
+
+ufw:
+  enabled: true
+  ipv6: true
+  defaults:
+    incoming: deny
+    outgoing: allow
+  allow:
+    - OpenSSH
+
+dns:
+  enabled: true
+  server: https://base.dns.mullvad.net/dns-query
+  listen_address: 127.0.0.1
+  listen_port: 5353
+  bootstrap:
+    - 9.9.9.9
+    - 149.112.112.112
+
+docker:
+  enabled: true
+
+python:
+  enabled: true
+  tools: [pdm, poetry, uv, pre-commit]
+
+github_tools:
+  enabled: true
+  gh: true
+  act: true
+
+github_releases:
+  enabled: true
+  generic:
+    - repo: jesseduffield/lazydocker
+      asset_pattern: "lazydocker_{version}_Linux_{arch}.tar.gz"
+      binary: lazydocker
+      arch_map: { amd64: x86_64, arm64: arm64 }
+    - repo: sayanarijit/xplr
+      asset_pattern: "xplr-linux{arch_suffix}.tar.gz"
+      binary: xplr
+      arch_map: { amd64: "", arm64: "-aarch64" }
+    - repo: go-task/task
+      asset_pattern: "task_linux_{arch}.tar.gz"
+      binary: task
+      arch_map: { amd64: amd64, arm64: arm64 }
+  custom:
+    bandwhich: true
+    vortix: true
+    somo: true
+
+shell:
+  enabled: true
+  default_shell: fish
+  fisher: true
+  tide: true
+  aliases:
+    cat: batcat
+    ll: "lsd -ahlF --header --group-dirs first"
+  direnv: true
