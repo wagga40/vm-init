@@ -78,7 +78,6 @@ usage() {
   _env "VM_INIT_PREFIX"       "Install directory (default: /opt/vm-init)"
   _env "VM_INIT_BIN_DIR"      "Symlink directory (default: /usr/local/sbin)"
   _env "VM_INIT_NO_SYMLINK"   "Set to 1 to skip symlinks"
-  _env "GH_TOKEN / GITHUB_TOKEN" "Authenticate GitHub API (higher rate limits)"
 
   _section "Examples:"
   echo -e "  ${_C_DIM}# Install the latest release${_C_RESET}"
@@ -119,28 +118,12 @@ printf "  ${_C_DIM}%-10s${_C_RESET} ${_C_BOLD}%s${_C_RESET}\n" "Version:" "${VM_
 printf "  ${_C_DIM}%-10s${_C_RESET} ${_C_BOLD}%s${_C_RESET}\n" "Prefix:"  "${VM_INIT_PREFIX}"
 echo ""
 
-resolve_latest_tag() {
-  local api="https://api.github.com/repos/${VM_INIT_REPO}/releases/latest"
-  local auth_hdr=()
-  [[ -n "${GH_TOKEN:-}" ]]     && auth_hdr=(-H "Authorization: Bearer ${GH_TOKEN}")
-  [[ -n "${GITHUB_TOKEN:-}" ]] && auth_hdr=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
-  curl -fsSL "${auth_hdr[@]}" "$api" \
-    | grep -m1 '"tag_name"' \
-    | sed -E 's/.*"tag_name"\s*:\s*"([^"]+)".*/\1/'
-}
-
-TAG="$VM_INIT_VERSION"
-if [[ "$TAG" == "latest" ]]; then
-  log_step "Resolving latest release tag"
-  TAG=$(resolve_latest_tag) || err "Could not resolve latest release from GitHub"
-  [[ -z "$TAG" ]] && err "Empty tag returned from GitHub API"
-  log_info "Tag: ${_C_BOLD}${TAG}${_C_RESET}"
+TARBALL_NAME="vm-init.tar.gz"
+if [[ "$VM_INIT_VERSION" == "latest" ]]; then
+  TARBALL_URL="https://github.com/${VM_INIT_REPO}/releases/latest/download/${TARBALL_NAME}"
+else
+  TARBALL_URL="https://github.com/${VM_INIT_REPO}/releases/download/${VM_INIT_VERSION}/${TARBALL_NAME}"
 fi
-
-VERSION="${TAG#v}"
-BASE_URL="https://github.com/${VM_INIT_REPO}/releases/download/${TAG}"
-TARBALL_NAME="vm-init-${VERSION}.tar.gz"
-TARBALL_URL="${BASE_URL}/${TARBALL_NAME}"
 SHA_URL="${TARBALL_URL}.sha256"
 
 TMP=$(mktemp -d)
@@ -148,8 +131,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 log_step "Downloading ${TARBALL_NAME}"
 if ! curl -fsSL "$TARBALL_URL" -o "$TMP/$TARBALL_NAME"; then
-  err "Failed to download $TARBALL_URL
-     (tip: set VM_INIT_VERSION to a specific tag if 'latest' has a different asset name)"
+  err "Failed to download $TARBALL_URL"
 fi
 
 log_step "Downloading sha256 checksum"
@@ -170,15 +152,17 @@ log_ok "Checksum matches"
 
 log_step "Installing to ${VM_INIT_PREFIX}"
 mkdir -p "$(dirname "$VM_INIT_PREFIX")"
+
+# Extract into a staging dir (stripping the versioned top-level folder the
+# tarball carries internally) so the swap below is atomic-ish.
+mkdir -p "$TMP/stage"
+tar xzf "$TMP/$TARBALL_NAME" -C "$TMP/stage" --strip-components=1
+
 rm -rf "${VM_INIT_PREFIX}.old"
 if [[ -d "$VM_INIT_PREFIX" ]]; then
   mv "$VM_INIT_PREFIX" "${VM_INIT_PREFIX}.old"
 fi
-
-tar xzf "$TMP/$TARBALL_NAME" -C "$TMP"
-extract_dir="$TMP/vm-init-${VERSION}"
-[[ -d "$extract_dir" ]] || err "Unexpected tarball layout (no ${extract_dir})"
-mv "$extract_dir" "$VM_INIT_PREFIX"
+mv "$TMP/stage" "$VM_INIT_PREFIX"
 chmod +x "$VM_INIT_PREFIX/vm-init.sh"
 [[ -f "$VM_INIT_PREFIX/scripts/install.sh" ]] && chmod +x "$VM_INIT_PREFIX/scripts/install.sh"
 [[ -d "$VM_INIT_PREFIX/scripts"    ]] && chmod +x "$VM_INIT_PREFIX"/scripts/*.sh
@@ -195,8 +179,17 @@ fi
 
 rm -rf "${VM_INIT_PREFIX}.old"
 
+installed_version=""
+if [[ -f "$VM_INIT_PREFIX/VERSION" ]]; then
+  installed_version=$(tr -d '[:space:]' < "$VM_INIT_PREFIX/VERSION")
+fi
+
 echo ""
-echo -e "${_C_BRIGHT_GREEN}${_C_BOLD}${_SYM_OK}${_C_RESET} ${_C_BOLD}vm-init ${TAG} installed${_C_RESET} at ${_C_CYAN}${VM_INIT_PREFIX}${_C_RESET}"
+if [[ -n "$installed_version" ]]; then
+  echo -e "${_C_BRIGHT_GREEN}${_C_BOLD}${_SYM_OK}${_C_RESET} ${_C_BOLD}vm-init ${installed_version} installed${_C_RESET} at ${_C_CYAN}${VM_INIT_PREFIX}${_C_RESET}"
+else
+  echo -e "${_C_BRIGHT_GREEN}${_C_BOLD}${_SYM_OK}${_C_RESET} ${_C_BOLD}vm-init installed${_C_RESET} at ${_C_CYAN}${VM_INIT_PREFIX}${_C_RESET}"
+fi
 echo ""
 echo -e "${_C_BOLD}Next steps${_C_RESET}"
 if [[ "$VM_INIT_NO_SYMLINK" != "1" ]]; then
