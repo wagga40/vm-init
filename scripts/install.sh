@@ -68,7 +68,7 @@ usage() {
   echo "  sudo bash scripts/install.sh [options]"
 
   _section "Options:"
-  _opt "--version <tag>"       "Release tag to install (e.g. v1.0). Default: latest"
+  _opt "--version <tag>"       "Release tag to install. Default: latest"
   _opt "--prefix <dir>"        "Install directory (default: /opt/vm-init)"
   _opt "--no-symlink"          "Skip creating symlinks under /usr/local/sbin"
   _opt "--help, -h"            "Show this help"
@@ -83,9 +83,6 @@ usage() {
   _section "Examples:"
   echo -e "  ${_C_DIM}# Install the latest release${_C_RESET}"
   echo -e "  ${_C_CYAN}curl -fsSL https://raw.githubusercontent.com/${VM_INIT_REPO}/main/scripts/install.sh | sudo bash${_C_RESET}"
-  echo ""
-  echo -e "  ${_C_DIM}# Pin a specific version${_C_RESET}"
-  echo -e "  ${_C_CYAN}sudo bash scripts/install.sh --version v1.0${_C_RESET}"
   echo ""
 }
 

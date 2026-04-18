@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g. v1.0)'
+        description: 'Tag to release (must match VERSION, e.g. vX.Y.Z)'
         required: true
 
 permissions:
@@ -52,11 +52,21 @@ jobs:
       - name: Build single-file bundle
         run: task build-single
 
+      - name: Prepare release assets (unversioned filenames)
+        run: |
+          set -euo pipefail
+          version="${{ steps.tag.outputs.version }}"
+          cd dist
+          cp "vm-init-${version}"        "vm-init"
+          cp "vm-init-${version}.tar.gz" "vm-init.tar.gz"
+          sha256sum vm-init        > vm-init.sha256
+          sha256sum vm-init.tar.gz > vm-init.tar.gz.sha256
+
       - name: Summarize artifacts
         run: |
           ls -la dist/
-          cat dist/vm-init-${{ steps.tag.outputs.version }}.tar.gz.sha256
-          cat dist/vm-init-${{ steps.tag.outputs.version }}.sha256
+          cat dist/vm-init.tar.gz.sha256
+          cat dist/vm-init.sha256
 
       - name: Create GitHub release
         env:
@@ -64,10 +74,9 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ steps.tag.outputs.tag }}"
-          version="${{ steps.tag.outputs.version }}"
-          tarball="dist/vm-init-${version}.tar.gz"
+          tarball="dist/vm-init.tar.gz"
           tarball_sha="${tarball}.sha256"
-          bundle="dist/vm-init-${version}"
+          bundle="dist/vm-init"
           bundle_sha="${bundle}.sha256"
 
           notes_file=$(mktemp)
@@ -77,7 +86,7 @@ jobs:
             echo "### Install (single-file, recommended)"
             echo ""
             echo '```bash'
-            echo "curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/vm-init-${version} \\"
+            echo "curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/vm-init \\"
             echo "  -o /usr/local/sbin/vm-init && sudo chmod +x /usr/local/sbin/vm-init"
             echo "sudo vm-init --dry-run                  # preview with the embedded default"
             echo "sudo vm-init                            # run"
@@ -91,7 +100,7 @@ jobs:
             echo ""
             echo '```bash'
             echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/scripts/install.sh \\"
-            echo "  | sudo VM_INIT_VERSION=${tag} bash"
+            echo "  | sudo bash"
             echo '```'
             echo ""
             echo "### Checksums"

@@ -27,7 +27,7 @@ One self-contained shell script with `_common.sh`, all modules, and the default 
 
 ```bash
 # Download and pin to /usr/local/sbin
-curl -fsSL https://github.com/wagga40/vm-init/releases/latest/download/vm-init-<version> \
+curl -fsSL https://github.com/wagga40/vm-init/releases/latest/download/vm-init \
   -o /usr/local/sbin/vm-init
 sudo chmod +x /usr/local/sbin/vm-init
 
@@ -54,7 +54,7 @@ curl -fsSL https://raw.githubusercontent.com/wagga40/vm-init/main/scripts/instal
   | sudo bash
 ```
 
-Pin a version with `VM_INIT_VERSION=v1.0`. See `scripts/install.sh --help` for all options.
+See `scripts/install.sh --help` for all options (including `--version` to pin a specific release).
 
 After install, run:
 
@@ -188,7 +188,7 @@ Version is read from the `VERSION` file (falls back to `0.0.0-dev.g<sha>` in a g
 
 `task build-single` concatenates `modules/_common.sh`, every `modules/*.sh`, the orchestrator, and the default `vm-init.yml` into one shell script and sets `VM_INIT_BUNDLED=1`. At runtime that flag makes the orchestrator skip per-module `source` calls and fall back to the inlined YAML when no on-disk config is present.
 
-Publishing a release: tag the commit with `v<VERSION>` (e.g. `v1.0`) matching the VERSION file. The release workflow in `.github/workflows/release.yml` will build **both** the tarball and the single-file bundle, attach their sha256 sidecars, and draft release notes with install snippets for each path.
+Publishing a release: tag the commit with `v<VERSION>` matching the VERSION file. The release workflow in `.github/workflows/release.yml` will build **both** the tarball and the single-file bundle, rename them to unversioned asset names (so `/releases/latest/download/vm-init` always resolves), attach their sha256 sidecars, and draft release notes with install snippets for each path.
 
 ## Development
 
