@@ -1,5 +1,5 @@
 # vm-init.yml — configuration for vm-init.sh
-# Sensible defaults for an opinionated Ubuntu dev machine.
+# Sensible defaults for an opinionated Ubuntu machine.
 
 apt:
   enabled: true

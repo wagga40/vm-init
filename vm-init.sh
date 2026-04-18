@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vm-init.sh — Config-driven Ubuntu dev machine setup.
+# vm-init.sh — Config-driven Ubuntu machine setup.
 
 set -euo pipefail
 
@@ -87,7 +87,7 @@ _usage_example() {
 }
 
 usage() {
-  echo -e "${_C_BOLD}vm-init${_C_RESET} ${_C_CYAN}${VM_INIT_VERSION}${_C_RESET} ${_C_DIM}—${_C_RESET} Config-driven Ubuntu dev machine setup"
+  echo -e "${_C_BOLD}vm-init${_C_RESET} ${_C_CYAN}${VM_INIT_VERSION}${_C_RESET} ${_C_DIM}—${_C_RESET} Config-driven Ubuntu machine setup"
 
   print_help_section "Usage:"
   echo -e "  sudo ${SCRIPT_NAME} [options]"
@@ -337,7 +337,7 @@ fi
 
 print_banner() {
   local title="vm-init v${VM_INIT_VERSION}"
-  local tagline="Config-driven Ubuntu dev machine setup"
+  local tagline="Config-driven Ubuntu machine setup"
   local w=44
   local in_w=$((w - 4))
   local h v tl tr bl br

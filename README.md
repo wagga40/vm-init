@@ -45,7 +45,7 @@ sudo install -Dm 0644 vm-init.yml /etc/vm-init/vm-init.yml
 
 The bundle runs with the embedded default when no `/etc/vm-init/vm-init.yml` and no `--config` are supplied, so a bare `sudo vm-init` works immediately — customize only when you want to.
 
-### Tarball (legacy)
+### Tarball
 
 Fetches the release tarball, verifies its sha256, extracts to `/opt/vm-init`, and symlinks `vm-init` (and `vm-init-recover-dns`) under `/usr/local/sbin`:
 

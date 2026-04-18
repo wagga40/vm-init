@@ -87,7 +87,7 @@ jobs:
             echo "sudo vm-init --config \"\$(pwd)/vm-init.yml\""
             echo '```'
             echo ""
-            echo "### Install (tarball, legacy)"
+            echo "### Install (tarball)"
             echo ""
             echo '```bash'
             echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/scripts/install.sh \\"
