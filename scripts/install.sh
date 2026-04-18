@@ -71,7 +71,7 @@ usage() {
 
   _section "Options:"
   _opt "--repo <owner/repo>"   "GitHub repo to pull from (overrides VM_INIT_REPO)"
-  _opt "--version <tag>"       "Release tag to install (e.g. v0.1.0). Default: latest"
+  _opt "--version <tag>"       "Release tag to install (e.g. v1.0). Default: latest"
   _opt "--prefix <dir>"        "Install directory (default: /opt/vm-init)"
   _opt "--no-symlink"          "Skip creating symlinks under /usr/local/sbin"
   _opt "--no-run"              "Don't auto-run vm-init after install (default)"
@@ -91,7 +91,7 @@ usage() {
   echo -e "  ${_C_CYAN}VM_INIT_REPO=yourname/vm-init sudo -E bash scripts/install.sh${_C_RESET}"
   echo ""
   echo -e "  ${_C_DIM}# Pin a specific version${_C_RESET}"
-  echo -e "  ${_C_CYAN}sudo bash scripts/install.sh --repo yourname/vm-init --version v0.1.0${_C_RESET}"
+  echo -e "  ${_C_CYAN}sudo bash scripts/install.sh --repo yourname/vm-init --version v1.0${_C_RESET}"
   echo ""
 }
 
