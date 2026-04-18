@@ -171,8 +171,14 @@ run_update_cmd() {
       log_step "Updating vm-init installation under /opt/vm-init"
       if [[ -n "$latest" ]]; then
         log_info "Latest available release: ${latest#v}"
+        # Avoid leaking vm-init's own VM_INIT_VERSION (e.g., "1.1.0") into
+        # install.sh, and pin the exact release tag (e.g., "v1.1.0").
+        env -u VM_INIT_VERSION bash "$installer" --prefix /opt/vm-init --version "$latest"
+      else
+        # Fallback to installer default ("latest"), without inheriting local
+        # VM_INIT_VERSION that is not a release tag.
+        env -u VM_INIT_VERSION bash "$installer" --prefix /opt/vm-init
       fi
-      bash "$installer" --prefix /opt/vm-init
       return $?
       ;;
     bundled_single_file)

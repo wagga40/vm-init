@@ -52,6 +52,51 @@ teardown() {
   [[ "$output" == *"local checkout mode"* ]]
 }
 
+@test "--update in installed mode passes a v-prefixed tag to installer" {
+  if [[ "$EUID" -ne 0 ]]; then
+    skip "requires root to exercise installed-mode update path"
+  fi
+  if [[ ! -d /opt ]] || [[ ! -w /opt ]]; then
+    skip "/opt is not writable in this environment"
+  fi
+
+  test_root="/opt/vm-init/ci-update-test-$$"
+  capture_args="$TEST_TMPDIR/update-installer-args.txt"
+  capture_env="$TEST_TMPDIR/update-installer-env.txt"
+  mkdir -p "$test_root/scripts" "$test_root/modules"
+  trap 'rm -rf "$test_root"' RETURN
+
+  cp "$VM_INIT_SH" "$test_root/vm-init.sh"
+  cp "$VM_INIT_COMMON_SH" "$test_root/modules/_common.sh"
+  cp "$VM_INIT_DEFAULT_CONFIG" "$test_root/vm-init.yml"
+  cp "$VM_INIT_REPO_ROOT/VERSION" "$test_root/VERSION"
+
+  cat > "$test_root/scripts/install.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" > "$CAPTURE_ARGS"
+if [[ "${VM_INIT_VERSION+x}" == "x" ]]; then
+  printf '%s\n' "$VM_INIT_VERSION" > "$CAPTURE_ENV"
+else
+  printf '%s\n' "__UNSET__" > "$CAPTURE_ENV"
+fi
+SH
+  chmod +x "$test_root/scripts/install.sh"
+
+  CAPTURE_ARGS="$capture_args" \
+  CAPTURE_ENV="$capture_env" \
+  VM_INIT_UPDATE_LATEST_OVERRIDE="v9.9.9" \
+  run "$test_root/vm-init.sh" --update
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Updating vm-init installation under /opt/vm-init"* ]]
+  [[ "$output" == *"Latest available release: 9.9.9"* ]]
+
+  grep -q -- '--prefix /opt/vm-init' "$capture_args"
+  grep -q -- '--version v9.9.9' "$capture_args"
+  grep -q '^__UNSET__$' "$capture_env"
+}
+
 @test "-h is an alias for --help" {
   run "$VM_INIT_SH" -h
   [ "$status" -eq 0 ]
