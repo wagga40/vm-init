@@ -1,5 +1,9 @@
 # vm-init
 
+[![CI](https://github.com/wagga40/vm-init/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wagga40/vm-init/actions/workflows/ci.yml)
+![Ubuntu 22.04 Tested](https://img.shields.io/badge/ubuntu-22.04_tested-E95420?logo=ubuntu&logoColor=white)
+![Ubuntu 24.04 Tested](https://img.shields.io/badge/ubuntu-24.04_tested-E95420?logo=ubuntu&logoColor=white)
+
 A highly opinionated, config-driven tool for provisioning Ubuntu machines. It reads `vm-init.yml` and executes modular install scripts to set up a carefully curated environment.
 
 ## What it installs
@@ -211,6 +215,10 @@ CI runs the full suite on every push / PR:
   `ubuntu:24.04` container, matching the target VM environment
   (`go-task` is installed so the packaging round-trip test exercises
   `task package` end-to-end).
+- `real-install-tests` — matrix on `ubuntu-22.04` and `ubuntu-24.04`
+  that runs real (non-dry-run) vm-init commands with a CI-safe config:
+  `--list-modules --config ci-real-install.yml` and two `--only apt`
+  install passes to verify repeat execution.
 
 ## Requirements
 

@@ -161,3 +161,56 @@ jobs:
             dist/
           if-no-files-found: ignore
           retention-days: 7
+
+  real-install-tests:
+    name: Real install tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install yq (mikefarah v4)
+        run: |
+          set -euo pipefail
+          sudo curl -fsSL --retry 3 --connect-timeout 10 \
+            -o /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Create CI config for safe hosted-runner execution
+        run: |
+          set -euo pipefail
+          cat > ci-real-install.yml <<'YAML'
+          apt:
+            enabled: true
+            packages:
+              cli: [jq]
+              extra: []
+          ufw: {enabled: false}
+          dns: {enabled: false}
+          docker: {enabled: false}
+          python: {enabled: false}
+          github_tools: {enabled: false}
+          github_releases: {enabled: false}
+          shell: {enabled: false}
+          YAML
+
+      - name: Validate selected modules from CI config
+        run: |
+          set -euo pipefail
+          ./vm-init.sh --list-modules --config ci-real-install.yml
+
+      - name: Run real vm-init apt install pass
+        run: |
+          set -euo pipefail
+          sudo ./vm-init.sh --config ci-real-install.yml --only apt
+
+      - name: Run second pass to verify repeat execution
+        run: |
+          set -euo pipefail
+          sudo ./vm-init.sh --config ci-real-install.yml --only apt
