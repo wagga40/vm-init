@@ -46,11 +46,9 @@ setup() {
   [[ "$output" == *"Options:"* ]]
   [[ "$output" == *"Environment:"* ]]
   [[ "$output" == *"Examples:"* ]]
-  [[ "$output" == *"--repo"* ]]
   [[ "$output" == *"--version"* ]]
   [[ "$output" == *"--prefix"* ]]
   [[ "$output" == *"--no-symlink"* ]]
-  [[ "$output" == *"--no-run"* ]]
 }
 
 @test "install.sh -h is an alias for --help" {

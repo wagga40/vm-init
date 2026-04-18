@@ -6,15 +6,13 @@
 
 set -euo pipefail
 
-# Edit this default once when you publish this repo.
-VM_INIT_REPO_DEFAULT="wagga40/vm-init"
+# Edit this single line if you fork to another GitHub repo.
+VM_INIT_REPO="wagga40/vm-init"
 
-: "${VM_INIT_REPO:=${VM_INIT_REPO_DEFAULT}}"
 : "${VM_INIT_VERSION:=latest}"
 : "${VM_INIT_PREFIX:=/opt/vm-init}"
 : "${VM_INIT_BIN_DIR:=/usr/local/sbin}"
 : "${VM_INIT_NO_SYMLINK:=0}"
-: "${VM_INIT_NO_RUN:=1}"
 
 # ---------- Minimal UI (mirrors modules/_common.sh for visual consistency) ----------
 _install_detect_ui() {
@@ -70,38 +68,32 @@ usage() {
   echo "  sudo bash scripts/install.sh [options]"
 
   _section "Options:"
-  _opt "--repo <owner/repo>"   "GitHub repo to pull from (overrides VM_INIT_REPO)"
   _opt "--version <tag>"       "Release tag to install (e.g. v1.0). Default: latest"
   _opt "--prefix <dir>"        "Install directory (default: /opt/vm-init)"
   _opt "--no-symlink"          "Skip creating symlinks under /usr/local/sbin"
-  _opt "--no-run"              "Don't auto-run vm-init after install (default)"
   _opt "--help, -h"            "Show this help"
 
   _section "Environment:"
-  _env "VM_INIT_REPO"         "<owner>/<repo> to pull from"
   _env "VM_INIT_VERSION"      "Release tag (default: latest)"
   _env "VM_INIT_PREFIX"       "Install directory (default: /opt/vm-init)"
   _env "VM_INIT_BIN_DIR"      "Symlink directory (default: /usr/local/sbin)"
   _env "VM_INIT_NO_SYMLINK"   "Set to 1 to skip symlinks"
-  _env "VM_INIT_NO_RUN"       "Set to 1 to skip auto-run (default: 1)"
   _env "GH_TOKEN / GITHUB_TOKEN" "Authenticate GitHub API (higher rate limits)"
 
   _section "Examples:"
-  echo -e "  ${_C_DIM}# Install latest release from a specific repo${_C_RESET}"
-  echo -e "  ${_C_CYAN}VM_INIT_REPO=yourname/vm-init sudo -E bash scripts/install.sh${_C_RESET}"
+  echo -e "  ${_C_DIM}# Install the latest release${_C_RESET}"
+  echo -e "  ${_C_CYAN}curl -fsSL https://raw.githubusercontent.com/${VM_INIT_REPO}/main/scripts/install.sh | sudo bash${_C_RESET}"
   echo ""
   echo -e "  ${_C_DIM}# Pin a specific version${_C_RESET}"
-  echo -e "  ${_C_CYAN}sudo bash scripts/install.sh --repo yourname/vm-init --version v1.0${_C_RESET}"
+  echo -e "  ${_C_CYAN}sudo bash scripts/install.sh --version v1.0${_C_RESET}"
   echo ""
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --repo)        VM_INIT_REPO="$2"; shift 2 ;;
     --version)     VM_INIT_VERSION="$2"; shift 2 ;;
     --prefix)      VM_INIT_PREFIX="$2"; shift 2 ;;
     --no-symlink)  VM_INIT_NO_SYMLINK=1; shift ;;
-    --no-run)      VM_INIT_NO_RUN=1; shift ;;
     --help|-h)     usage; exit 0 ;;
     *)             echo -e "${_C_RED}${_SYM_FAIL}${_C_RESET} Unknown option: ${_C_BOLD}$1${_C_RESET}" >&2
                    echo "" >&2
@@ -112,11 +104,6 @@ done
 
 if [[ $EUID -ne 0 ]]; then
   err "This installer must run as root (use: curl ... | sudo bash)"
-fi
-
-if [[ "$VM_INIT_REPO" == "$VM_INIT_REPO_DEFAULT" || "$VM_INIT_REPO" == *"REPLACE_ME"* ]]; then
-  err "VM_INIT_REPO is not configured. Set it via env or edit VM_INIT_REPO_DEFAULT at the top of scripts/install.sh.
-     Example: VM_INIT_REPO=yourname/vm-init sudo -E bash scripts/install.sh"
 fi
 
 for bin in curl tar sha256sum; do
@@ -131,7 +118,6 @@ done
 
 echo ""
 echo -e "${_C_BOLD}${_C_CYAN}vm-init installer${_C_RESET}"
-printf "  ${_C_DIM}%-10s${_C_RESET} ${_C_BOLD}%s${_C_RESET}\n" "Repo:"    "${VM_INIT_REPO}"
 printf "  ${_C_DIM}%-10s${_C_RESET} ${_C_BOLD}%s${_C_RESET}\n" "Version:" "${VM_INIT_VERSION}"
 printf "  ${_C_DIM}%-10s${_C_RESET} ${_C_BOLD}%s${_C_RESET}\n" "Prefix:"  "${VM_INIT_PREFIX}"
 echo ""
@@ -224,9 +210,3 @@ else
 fi
 printf "  ${_C_DIM}%-18s${_C_RESET} %s\n" "Custom config:" "Create /etc/vm-init/vm-init.yml (takes precedence over the default)"
 printf "  ${_C_DIM}%-18s${_C_RESET} ${_C_CYAN}%s${_C_RESET}\n" "Preview first:" "sudo vm-init --dry-run"
-
-if [[ "$VM_INIT_NO_RUN" != "1" ]]; then
-  echo ""
-  log_step "Running vm-init"
-  exec "$VM_INIT_PREFIX/vm-init.sh"
-fi
