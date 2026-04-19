@@ -233,10 +233,11 @@ dns:
 ### How it works
 
 1. `dnsproxy` binary is installed from GitHub releases.
-2. A systemd unit (`dnsproxy.service`) starts the proxy on `listen_address:listen_port`.
-3. A resolved drop-in (`/etc/systemd/resolved.conf.d/99-vm-init-dnsproxy.conf`) points `DNS=` at the local proxy.
+2. A systemd unit (`dnsproxy.service`, `Type=exec`) starts the proxy on `listen_address:listen_port` and only reports started once the UDP socket is bound (via an `ExecStartPost` poll on `ss`).
+3. A resolved drop-in (`/etc/systemd/resolved.conf.d/99-vm-init-dnsproxy.conf`) points `DNS=` at the local proxy and forces `Domains=~.` so all queries route through it.
 4. `/etc/resolv.conf` is symlinked to the resolved stub.
-5. Default-route network links are pinned to the local proxy via `resolvectl`.
+5. A `systemd-resolved` drop-in (`/etc/systemd/system/systemd-resolved.service.d/10-vm-init-dnsproxy.conf`) adds `Wants=dnsproxy.service` + `After=dnsproxy.service` so resolved actually waits for the proxy at boot — without this, resolved starts long before `dnsproxy` and queries `127.0.0.1:5353` while it is still dead, which is what makes DNS look broken until the next manual run.
+6. A oneshot service (`vm-init-dns-pin.service`) calls `/usr/local/sbin/vm-init-dns-pin` after `network-online.target` to re-apply the per-link `resolvectl dns/domain` pinning on every boot, so DHCP-supplied per-link DNS can't shadow the global config.
 
 ### Troubleshooting
 

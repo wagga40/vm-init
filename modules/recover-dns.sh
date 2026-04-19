@@ -95,9 +95,13 @@ echo -e "${_C_BOLD}${_C_MAGENTA}━━━ DNS recovery ━━━${_C_RESET}"
 [[ -n "$IFACE" ]] && log_info "Interface: ${_C_BOLD}${IFACE}${_C_RESET}"
 
 log_step "Disabling dnsproxy and removing custom unit/drop-in"
-systemctl disable --now dnsproxy >/dev/null 2>&1 || true
+systemctl disable --now dnsproxy vm-init-dns-pin >/dev/null 2>&1 || true
 rm -f /etc/systemd/system/dnsproxy.service
+rm -f /etc/systemd/system/vm-init-dns-pin.service
+rm -f /etc/systemd/system/systemd-resolved.service.d/10-vm-init-dnsproxy.conf
+rmdir /etc/systemd/system/systemd-resolved.service.d 2>/dev/null || true
 rm -f /etc/systemd/resolved.conf.d/99-vm-init-dnsproxy.conf
+rm -f /usr/local/sbin/vm-init-dns-pin
 
 log_step "Reloading units and reverting per-link override"
 systemctl daemon-reload

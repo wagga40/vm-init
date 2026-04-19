@@ -105,39 +105,30 @@ ensure_systemd_resolved() {
   fi
 }
 
-default_route_interfaces() {
-  ip -4 route show default 2>/dev/null | awk '/^default /{print $5}' | sort -u
-  ip -6 route show default 2>/dev/null | awk '/^default /{print $5}' | sort -u
-}
-
-pin_resolved_links_to_local() {
-  local local_dns_target="$1"
-  if ! is_installed resolvectl; then
-    log_skip "resolvectl not found; skip per-link DNS pinning"
-    return 0
-  fi
-
-  local default_links
-  default_links=$(default_route_interfaces | sort -u)
-
-  if [[ -z "$default_links" ]]; then
-    log_skip "No default-route links found for resolvectl pinning"
-    return 0
-  fi
-
-  log_step "Pinning default-route links to local DNS"
-  local iface
-  while IFS= read -r iface; do
-    [[ -z "$iface" ]] && continue
-    if ! resolvectl dns "$iface" "$local_dns_target" >/dev/null 2>&1; then
-      log_warn "Could not pin DNS on ${iface} to ${local_dns_target} (non-fatal)"
-      continue
-    fi
-    if ! resolvectl domain "$iface" "~." >/dev/null 2>&1; then
-      log_warn "Could not set routing domain on ${iface} (non-fatal)"
-      continue
-    fi
-  done <<< "$default_links"
+install_dns_pin_helper() {
+  cat > /usr/local/sbin/vm-init-dns-pin <<'PIN_EOF'
+#!/bin/sh
+# vm-init-dns-pin -- Pin default-route links to the local dnsproxy.
+# Installed by modules/dns.sh and run once on every boot via
+# vm-init-dns-pin.service so that DHCP-supplied per-link DNS settings can't
+# bypass the global "DNS=127.0.0.1:5353 / Domains=~." config in
+# systemd-resolved. Idempotent; safe to run by hand.
+#
+# Usage: vm-init-dns-pin [<addr[:port]>]
+#   default target: ${VM_INIT_DNS_TARGET:-127.0.0.1:5353}
+set -e
+TARGET="${1:-${VM_INIT_DNS_TARGET:-127.0.0.1:5353}}"
+command -v resolvectl >/dev/null 2>&1 || exit 0
+links=$( { ip -4 route show default 2>/dev/null | awk '/^default /{print $5}'
+           ip -6 route show default 2>/dev/null | awk '/^default /{print $5}'; } \
+         | sort -u )
+[ -z "$links" ] && exit 0
+for iface in $links; do
+  resolvectl dns "$iface" "$TARGET" >/dev/null 2>&1 || true
+  resolvectl domain "$iface" '~.' >/dev/null 2>&1 || true
+done
+PIN_EOF
+  chmod 0755 /usr/local/sbin/vm-init-dns-pin
 }
 
 dnsproxy_listening_on() {
@@ -219,17 +210,40 @@ install_dns() {
   done <<< "$(yq '.dns.bootstrap // ["9.9.9.9", "149.112.112.112"] | .[]' "$CONFIG")"
 
   log_step "Writing dnsproxy service"
+  # Ordering rationale (this is the bit that breaks DNS on reboot if wrong):
+  #  - After=network.target              loopback + basic network are up
+  #  - Before=systemd-resolved.service   so resolved sees a working :5353 from
+  #                                      its very first query at boot. Paired
+  #                                      with the resolved drop-in below
+  #                                      (Wants/After=dnsproxy.service) which
+  #                                      pulls dnsproxy into resolved's boot
+  #                                      transaction so this Before= actually
+  #                                      takes effect.
+  #  - Before=nss-lookup.target          dnsproxy is a DNS provider; it must
+  #                                      be ready before nss-lookup is reached
+  #                                      (After=nss-lookup.target would be a
+  #                                      classic mistake here).
+  #  - Type=exec + ExecStartPost wait    `systemctl restart dnsproxy` only
+  #                                      returns once the UDP socket is bound,
+  #                                      so resolved's restart truly races
+  #                                      against a ready proxy.
+  #  - No network-online.target          dnsproxy uses --bootstrap so it does
+  #                                      not need DNS, and network-online is
+  #                                      reached very late at boot which is
+  #                                      what made resolved fall back to a
+  #                                      dead :5353 the first time around.
   cat > /etc/systemd/system/dnsproxy.service <<EOF
 [Unit]
 Description=DNS over HTTPS/TLS proxy (dnsproxy)
 Documentation=https://github.com/AdguardTeam/dnsproxy
-After=network-online.target nss-lookup.target
-Wants=network-online.target
-Before=systemd-resolved.service
+After=network.target
+Before=systemd-resolved.service nss-lookup.target
+Wants=nss-lookup.target
 
 [Service]
-Type=simple
+Type=exec
 ExecStart=/usr/local/bin/dnsproxy --upstream=${upstream} --listen=${listen_address} --port=${listen_port}${bootstrap_flags} --cache --upstream-mode=parallel
+ExecStartPost=/bin/sh -c 'for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do ss -lunH "sport = :${listen_port}" 2>/dev/null | grep -q . && exit 0; sleep 0.2; done; exit 1'
 Restart=on-failure
 RestartSec=2
 
@@ -247,11 +261,41 @@ Domains=~.
 DNSStubListener=yes
 EOF
 
+  log_step "Making systemd-resolved wait for dnsproxy at boot"
+  # Without this drop-in the Before= in dnsproxy.service is a no-op at boot:
+  # systemd-resolved is activated very early, in a different transaction, so
+  # there is no shared activation for the ordering to apply to. Pulling
+  # dnsproxy in via Wants= here puts both units in the same transaction.
+  mkdir -p /etc/systemd/system/systemd-resolved.service.d
+  cat > /etc/systemd/system/systemd-resolved.service.d/10-vm-init-dnsproxy.conf <<EOF
+[Unit]
+Wants=dnsproxy.service
+After=dnsproxy.service
+EOF
+
+  log_step "Installing per-link DNS pin helper"
+  install_dns_pin_helper
+  cat > /etc/systemd/system/vm-init-dns-pin.service <<EOF
+[Unit]
+Description=Pin per-link DNS to local dnsproxy (vm-init)
+Documentation=https://github.com/wagga40/vm-init
+After=network-online.target dnsproxy.service systemd-resolved.service
+Wants=network-online.target dnsproxy.service systemd-resolved.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/vm-init-dns-pin ${resolved_dns_target}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
   log_step "Ensuring resolv.conf uses the stub resolver"
   ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
   systemctl daemon-reload >/dev/null 2>&1 || true
-  systemctl enable dnsproxy >/dev/null 2>&1 || true
+  systemctl enable dnsproxy vm-init-dns-pin >/dev/null 2>&1 || true
   if ! systemctl restart dnsproxy >/dev/null 2>&1; then
     log_warn "dnsproxy failed to start"
     log_info "Debug: journalctl -u dnsproxy -n 30 --no-pager"
@@ -268,7 +312,10 @@ EOF
   fi
 
   systemctl restart systemd-resolved >/dev/null 2>&1 || true
-  pin_resolved_links_to_local "$resolved_dns_target"
+  # Apply the boot-time pinning right now too (and surface failures via the
+  # oneshot's exit status); fall back to invoking the helper directly.
+  systemctl restart vm-init-dns-pin >/dev/null 2>&1 \
+    || /usr/local/sbin/vm-init-dns-pin "$resolved_dns_target" >/dev/null 2>&1 || true
 
   if verify_doh_resolves; then
     log_ok "dnsproxy configured and resolving via ${upstream}"
