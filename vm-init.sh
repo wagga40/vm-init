@@ -805,7 +805,10 @@ run_module() {
     # shellcheck source=/dev/null
     source "${MODULES_DIR}/${module_file}"
   fi
-  "$entry_func" || rc=$?
+  set +e
+  run_with_errexit "$entry_func"
+  rc=$?
+  set -e
 
   new_warns=$(( ${VM_INIT_WARN_COUNT:-0} - pre_warn ))
 

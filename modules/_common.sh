@@ -174,6 +174,45 @@ run_quiet() {
   fi
 }
 
+# Run a module entry point with errexit active inside the wrapped function while
+# still letting the orchestrator capture its exit code and print a summary.
+#
+# Callers that need to inspect the return code should disable errexit before
+# invoking this helper; do not put the helper itself in an if/||/&& condition,
+# because Bash disables errexit inside commands reached through those contexts.
+run_with_errexit() {
+  local _errexit_was_set=0 _rc=0 _warn_file _warn_count
+  case "$-" in
+    *e*) _errexit_was_set=1 ;;
+  esac
+
+  _warn_file=$(mktemp) || return 1
+
+  set +e
+  (
+    set -e
+    trap 'printf "%s\n" "${VM_INIT_WARN_COUNT:-0}" > "$_warn_file"' EXIT
+    "$@"
+  )
+  _rc=$?
+
+  if [[ -s "$_warn_file" ]]; then
+    _warn_count=$(<"$_warn_file")
+    if [[ "$_warn_count" =~ ^[0-9]+$ ]]; then
+      VM_INIT_WARN_COUNT="$_warn_count"
+      export VM_INIT_WARN_COUNT
+    fi
+  fi
+  rm -f "$_warn_file"
+
+  if (( _errexit_was_set )); then
+    set -e
+  else
+    set +e
+  fi
+  return "$_rc"
+}
+
 is_installed() {
   command -v "$1" >/dev/null 2>&1
 }

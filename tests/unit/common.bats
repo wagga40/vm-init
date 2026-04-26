@@ -66,6 +66,45 @@ teardown() {
   [ "$result" = "3" ]
 }
 
+@test "run_with_errexit: stops wrapped module at first failing command" {
+  run bash -c '
+    source "$1"
+    failing_module() {
+      echo before
+      run_quiet false
+      echo after
+    }
+    set +e
+    run_with_errexit failing_module
+    rc=$?
+    set -e
+    printf "rc=%s\n" "$rc"
+  ' _ "$VM_INIT_COMMON_SH"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"before"* ]]
+  [[ "$output" != *"after"* ]]
+  [[ "$output" == *"rc=1"* ]]
+}
+
+@test "run_with_errexit: propagates warning count from wrapped module" {
+  run bash -c '
+    source "$1"
+    export VM_INIT_WARN_COUNT=0
+    warning_module() {
+      log_warn "test warning" >/dev/null
+    }
+    set +e
+    run_with_errexit warning_module
+    rc=$?
+    set -e
+    printf "rc=%s warnings=%s\n" "$rc" "$VM_INIT_WARN_COUNT"
+  ' _ "$VM_INIT_COMMON_SH"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"rc=0 warnings=1"* ]]
+}
+
 # ---------- sha256 helpers ----------
 
 @test "_sha256_of: computes known hash for 'hello'" {
