@@ -54,6 +54,14 @@ log_warn() { echo -e "  ${_C_YELLOW}${_SYM_WARN}${_C_RESET} $1" >&2; }
 log_fail() { echo -e "  ${_C_RED}${_SYM_FAIL}${_C_RESET} $1" >&2; }
 err()      { log_fail "$*"; exit 1; }
 
+install_curl() {
+  curl -fsSL \
+    --retry 3 --retry-delay 2 --retry-connrefused \
+    --connect-timeout "${VM_INIT_CURL_CONNECT_TIMEOUT:-15}" \
+    --max-time "${VM_INIT_CURL_MAX_TIME:-300}" \
+    "$@"
+}
+
 _opt() { printf "    ${_C_BOLD}%-22s${_C_RESET} %s\n" "$1" "$2"; }
 _env() { printf "    ${_C_BOLD}%-22s${_C_RESET} %s\n" "$1" "$2"; }
 _section() { echo ""; echo -e "${_C_BOLD}${_C_MAGENTA}$1${_C_RESET}"; }
@@ -85,10 +93,21 @@ usage() {
   echo ""
 }
 
+require_option_value() {
+  local flag="$1"
+  local value="${2-}"
+  if [[ -z "$value" || "$value" == --* ]]; then
+    log_fail "Missing value for ${flag}"
+    echo "" >&2
+    usage >&2
+    exit 1
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --version)     VM_INIT_VERSION="$2"; shift 2 ;;
-    --prefix)      VM_INIT_PREFIX="$2"; shift 2 ;;
+    --version)     require_option_value "$1" "${2-}"; VM_INIT_VERSION="$2"; shift 2 ;;
+    --prefix)      require_option_value "$1" "${2-}"; VM_INIT_PREFIX="$2"; shift 2 ;;
     --no-symlink)  VM_INIT_NO_SYMLINK=1; shift ;;
     --help|-h)     usage; exit 0 ;;
     *)             echo -e "${_C_RED}${_SYM_FAIL}${_C_RESET} Unknown option: ${_C_BOLD}$1${_C_RESET}" >&2
@@ -130,12 +149,12 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 log_step "Downloading ${TARBALL_NAME}"
-if ! curl -fsSL "$TARBALL_URL" -o "$TMP/$TARBALL_NAME"; then
+if ! install_curl "$TARBALL_URL" -o "$TMP/$TARBALL_NAME"; then
   err "Failed to download $TARBALL_URL"
 fi
 
 log_step "Downloading sha256 checksum"
-if ! curl -fsSL "$SHA_URL" -o "$TMP/$TARBALL_NAME.sha256"; then
+if ! install_curl "$SHA_URL" -o "$TMP/$TARBALL_NAME.sha256"; then
   err "Failed to download ${SHA_URL}"
 fi
 

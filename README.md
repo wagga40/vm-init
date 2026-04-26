@@ -4,23 +4,23 @@
 ![Ubuntu 22.04 Tested](https://img.shields.io/badge/ubuntu-22.04_tested-E95420?logo=ubuntu&logoColor=white)
 ![Ubuntu 24.04 Tested](https://img.shields.io/badge/ubuntu-24.04_tested-E95420?logo=ubuntu&logoColor=white)
 
-A highly opinionated, config-driven tool for provisioning Ubuntu machines. It reads `vm-init.yml` and executes modular install scripts to set up a carefully curated environment.
+A config-driven tool for provisioning Ubuntu machines. It starts with a small, low-risk default (core packages plus a plain Fish shell) and lets you opt into heavier networking, security, Docker, Python, and GitHub tooling in `vm-init.yml`.
 
 ## What it installs
 
-| Module | What |
-|--------|------|
-| **apt** | Fish shell, editors, build tools, CLI utilities, dev tools |
-| **ufw** | Firewall — deny incoming, allow outgoing, permit listed services |
-| **fail2ban** | Brute-force defense — bans offending IPs (SSH jail on by default, UFW-aware) |
-| **dns** | DNS privacy via dnsproxy (DoH/DoT) with systemd-resolved |
-| **docker** | Docker engine + compose plugin |
-| **python** | pdm, poetry, uv, pre-commit via pipx |
-| **github-tools** | GitHub CLI (`gh`), act (local GitHub Actions) |
-| **github-releases** | lazydocker, xplr, task, bandwhich, vortix, somo |
-| **shell** | Fish as default, Fisher + Tide, aliases, direnv |
+| Module | Default | What |
+|--------|---------|------|
+| **apt** | on | Fish shell, editors, build tools, Python base packages, and core CLI utilities |
+| **shell** | on | Fish as default shell, without Fisher/Tide unless opted in |
+| **ufw** | off | Firewall — deny incoming, allow outgoing, permit listed services |
+| **fail2ban** | off | Brute-force defense — bans offending IPs (SSH jail available, UFW-aware) |
+| **dns** | off | DNS privacy via dnsproxy (DoH/DoT) with systemd-resolved |
+| **docker** | off | Docker engine + compose plugin |
+| **python** | off | uv and pre-commit via pipx by default when enabled |
+| **github-tools** | off | GitHub CLI (`gh`), optionally act (local GitHub Actions) |
+| **github-releases** | off | lazydocker, xplr, task, bandwhich, vortix, somo |
 
-Each module can be toggled on/off or customized in `vm-init.yml`.
+Each module can be toggled on/off or customized in `vm-init.yml`. Advanced modules are intentionally opt-in so a first run stays simple and predictable.
 
 ## Install
 
@@ -112,7 +112,9 @@ sudo vm-init --verbose                # stream full command output
 sudo vm-init --log-file /tmp/run.log  # custom log path (default: /var/log/vm-init-<ts>.log)
 ```
 
-By default every run mirrors stdout/stderr to `/var/log/vm-init-<timestamp>.log`. Pass `--no-log` to disable. Every run prints a structured summary at the end (ok / skipped / warned / failed counts).
+By default every run mirrors stdout/stderr to `/var/log/vm-init-<timestamp>.log`. Pass `--no-log` to disable. Every run prints a structured summary at the end (ok / skipped / warned / failed counts), and modules that cannot deliver their requested outcome are reported as failed.
+
+Long-running external commands are bounded when GNU `timeout` (or `gtimeout`) is available. Set `VM_INIT_CMD_TIMEOUT=0` to disable that wrapper, or set it to a number of seconds to change the default cap.
 
 ### Update behavior and run modes
 
@@ -144,17 +146,23 @@ sudo ./vm-init.sh --config ./vm-init.yml
 
 ## Configuration
 
-Edit `vm-init.yml` to customize. The config uses categories with sensible defaults:
+Edit `vm-init.yml` to customize. The default enables only the small baseline:
 
 ```yaml
 apt:
   enabled: true
   packages:
-    cli: [bat, lsd, tree, jq, ripgrep, fzf]
+    cli: [jq, fzf, ripgrep, fd-find]
+    python: [python3-pip, python3-venv, pipx]
     extra: [my-custom-package]
 
 docker:
-  enabled: false  # disable a whole category
+  enabled: false  # opt in when needed
+
+github_tools:
+  enabled: false
+  gh: true
+  act: false      # opt in separately; act is heavier than gh
 ```
 
 Adding a new GitHub release tool (standard tarball) requires only a config entry:

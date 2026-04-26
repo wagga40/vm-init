@@ -22,6 +22,13 @@ teardown() {
   [ "$status" -ne 0 ]
 }
 
+@test "require_commands: reports missing commands clearly" {
+  run require_commands "very-unlikely-binary-$$"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Missing required command(s)"* ]]
+  [[ "$output" == *"very-unlikely-binary-$$"* ]]
+}
+
 @test "should_force: false by default" {
   unset VM_INIT_FORCE || true
   run should_force
@@ -103,6 +110,45 @@ teardown() {
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"rc=0 warnings=1"* ]]
+}
+
+@test "run_quiet: wraps external commands with timeout when available" {
+  marker="$TEST_TMPDIR/timeout-args"
+  mkdir -p "$TEST_TMPDIR/bin"
+  cat > "$TEST_TMPDIR/bin/timeout" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" > "$marker"
+shift 2
+"\$@"
+EOF
+  chmod +x "$TEST_TMPDIR/bin/timeout"
+  old_path="$PATH"
+  PATH="$TEST_TMPDIR/bin:$PATH"
+
+  VM_INIT_CMD_TIMEOUT=7 run_quiet true
+
+  PATH="$old_path"
+  grep -q -- '--preserve-status 7 true' "$marker"
+}
+
+@test "run_quiet: does not wrap shell functions with timeout" {
+  marker="$TEST_TMPDIR/function-called"
+  mkdir -p "$TEST_TMPDIR/bin"
+  cat > "$TEST_TMPDIR/bin/timeout" <<'EOF'
+#!/usr/bin/env bash
+exit 124
+EOF
+  chmod +x "$TEST_TMPDIR/bin/timeout"
+  old_path="$PATH"
+  PATH="$TEST_TMPDIR/bin:$PATH"
+  sample_function() {
+    echo called > "$marker"
+  }
+
+  VM_INIT_CMD_TIMEOUT=7 run_quiet sample_function
+
+  PATH="$old_path"
+  grep -q '^called$' "$marker"
 }
 
 # ---------- sha256 helpers ----------
@@ -246,4 +292,97 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"Setup complete."* ]]
   [[ "$output" == *"${_SYM_OK}"* ]]
+}
+
+@test "dnsproxy_listening_on: fails closed when ss is unavailable" {
+  # shellcheck source=/dev/null
+  source "${VM_INIT_REPO_ROOT}/modules/dns.sh"
+  old_path="$PATH"
+  PATH="$TEST_TMPDIR/bin"
+
+  run dnsproxy_listening_on 127.0.0.1 5353
+
+  PATH="$old_path"
+  [ "$status" -ne 0 ]
+}
+
+@test "install_dns: fails when requested dnsproxy installation fails" {
+  # shellcheck source=/dev/null
+  source "${VM_INIT_REPO_ROOT}/modules/dns.sh"
+  require_commands() { return 0; }
+  install_dnsproxy_binary() { return 1; }
+
+  run install_dns
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"DoH/DoT is NOT active"* ]]
+}
+
+@test "install_dns: preflights ss before changing DNS config" {
+  # shellcheck source=/dev/null
+  source "${VM_INIT_REPO_ROOT}/modules/dns.sh"
+  marker="$TEST_TMPDIR/dns-preflight"
+  require_commands() {
+    printf '%s\n' "$*" > "$marker"
+    return 1
+  }
+
+  run install_dns
+
+  [ "$status" -ne 0 ]
+  grep -q 'ss' "$marker"
+}
+
+@test "install_fisher_tide: returns non-zero when non-root fish setup fails" {
+  # shellcheck source=/dev/null
+  source "${VM_INIT_REPO_ROOT}/modules/shell.sh"
+  yq_get() { echo true; }
+  run_quiet() {
+    if [[ "$1" == "download_file" ]]; then
+      return 0
+    fi
+    return 1
+  }
+
+  run install_fisher_tide alice "$TEST_TMPDIR/home"
+
+  [ "$status" -ne 0 ]
+}
+
+@test "install_shell: fails when changing a human user's shell fails" {
+  # shellcheck source=/dev/null
+  source "${VM_INIT_REPO_ROOT}/modules/shell.sh"
+  yq() {
+    case "$1" in
+      ".shell.default_shell"*) echo env ;;
+      ".shell.aliases"*) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  yq_get() { echo false; }
+  require_commands() { return 0; }
+  human_users() { echo "alice:${TEST_TMPDIR}/home"; }
+  usermod() { return 0; }
+  chsh() { return 1; }
+
+  run install_shell
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Failed to change default shell for alice"* ]]
+}
+
+@test "install_python: fails early when pipx is missing" {
+  # shellcheck source=/dev/null
+  source "${VM_INIT_REPO_ROOT}/modules/python.sh"
+  yq() { echo uv; }
+  old_path="$PATH"
+  mkdir -p "$TEST_TMPDIR/bin"
+  PATH="$TEST_TMPDIR/bin"
+
+  run install_python
+
+  PATH="$old_path"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Missing required command(s)"* ]]
+  [[ "$output" == *"pipx"* ]]
 }

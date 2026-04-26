@@ -3,6 +3,8 @@
 # Reads: CONFIG (path to vm-init.yml)
 
 install_apt() {
+  require_commands apt-get || return 1
+
   log_step "Collecting APT packages from config"
   local packages
   packages=$(yq '.apt.packages | to_entries | .[].value | .[]' "$CONFIG" | sort -u)

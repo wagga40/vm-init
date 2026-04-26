@@ -73,7 +73,9 @@ _vm_init_detect_ui() {
 _vm_init_detect_ui
 
 : "${VM_INIT_WARN_COUNT:=0}"
+: "${VM_INIT_CMD_TIMEOUT:=900}"
 export VM_INIT_WARN_COUNT
+export VM_INIT_CMD_TIMEOUT
 
 # ---------- Logging ----------
 
@@ -160,12 +162,32 @@ format_duration() {
 # ---------- Quiet runner ----------
 # Runs a command silently unless VM_INIT_VERBOSE=1.
 # On failure the captured output is printed regardless.
+_timeout_bin() {
+  command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null
+}
+
+run_maybe_timeout() {
+  local cmd="$1"
+  local timeout_bin=""
+
+  if [[ "${VM_INIT_CMD_TIMEOUT:-0}" != "0" ]] \
+      && ! declare -F "$cmd" >/dev/null 2>&1; then
+    timeout_bin=$(_timeout_bin || true)
+  fi
+
+  if [[ -n "$timeout_bin" ]]; then
+    "$timeout_bin" --preserve-status "$VM_INIT_CMD_TIMEOUT" "$@"
+  else
+    "$@"
+  fi
+}
+
 run_quiet() {
   if [[ "${VM_INIT_VERBOSE:-0}" == "1" ]]; then
-    "$@"
+    run_maybe_timeout "$@"
   else
     local _out _rc=0
-    _out=$("$@" 2>&1) || _rc=$?
+    _out=$(run_maybe_timeout "$@" 2>&1) || _rc=$?
     if [[ $_rc -ne 0 ]]; then
       log_fail "Command failed (exit ${_rc}): $*"
       echo "$_out" >&2
@@ -217,6 +239,20 @@ is_installed() {
   command -v "$1" >/dev/null 2>&1
 }
 
+require_commands() {
+  local missing=()
+  local cmd
+  for cmd in "$@"; do
+    command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+  done
+
+  if (( ${#missing[@]} > 0 )); then
+    log_fail "Missing required command(s): ${missing[*]}"
+    log_info "Install them first, or run the apt module before this module."
+    return 1
+  fi
+}
+
 should_force() {
   [[ "${VM_INIT_FORCE:-0}" == "1" ]]
 }
@@ -229,7 +265,7 @@ should_force() {
 yq_get() {
   local path="$1" default="$2" config="$3"
   local val
-  val=$(yq "$path" "$config")
+  val=$(yq -r "$path" "$config")
   if [[ "$val" == "null" ]]; then
     echo "$default"
   else
@@ -380,6 +416,7 @@ declare -A _VM_INIT_VERSION_CACHE=()
 # Honors GH_TOKEN / GITHUB_TOKEN for authenticated requests (5000/hr vs 60/hr).
 github_latest_version() {
   local repo="$1"
+  require_commands jq || return 1
   if [[ -n "${_VM_INIT_VERSION_CACHE[$repo]:-}" ]]; then
     echo "${_VM_INIT_VERSION_CACHE[$repo]}"
     return 0

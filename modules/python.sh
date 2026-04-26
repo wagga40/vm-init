@@ -3,6 +3,8 @@
 # Reads: CONFIG (path to vm-init.yml)
 
 install_python() {
+  require_commands pipx || return 1
+
   log_step "Setting up pipx environment"
   mkdir -p /opt/pipx
   export PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin

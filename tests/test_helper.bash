@@ -5,7 +5,8 @@
 # tests/integration/ (exercise the full orchestrator via --dry-run etc).
 
 TEST_HELPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export VM_INIT_REPO_ROOT="$(cd "${TEST_HELPER_DIR}/.." && pwd)"
+VM_INIT_REPO_ROOT="$(cd "${TEST_HELPER_DIR}/.." && pwd)"
+export VM_INIT_REPO_ROOT
 export VM_INIT_SH="${VM_INIT_REPO_ROOT}/vm-init.sh"
 export VM_INIT_COMMON_SH="${VM_INIT_REPO_ROOT}/modules/_common.sh"
 export VM_INIT_DEFAULT_CONFIG="${VM_INIT_REPO_ROOT}/vm-init.yml"
@@ -104,8 +105,45 @@ YAML
 # need --list-modules to show "off".
 make_mixed_config() {
   local dest="$1"
-  make_minimal_config "$dest"
-  # Disable two modules
-  yq -i '.docker.enabled = false' "$dest"
-  yq -i '.github_tools.enabled = false' "$dest"
+  cat > "$dest" <<'YAML'
+apt:
+  enabled: true
+  packages: {}
+ufw:
+  enabled: true
+  defaults:
+    incoming: deny
+    outgoing: allow
+  allow: []
+fail2ban:
+  enabled: true
+  bantime: 1h
+  findtime: 10m
+  maxretry: 5
+  banaction: auto
+  jails:
+    sshd:
+      enabled: true
+dns:
+  enabled: true
+  server: https://base.dns.mullvad.net/dns-query
+  listen_port: 5353
+docker:
+  enabled: false
+python:
+  enabled: true
+  tools: []
+github_tools:
+  enabled: false
+  gh: true
+  act: true
+github_releases:
+  enabled: true
+  generic: []
+  custom: {}
+shell:
+  enabled: true
+  default_shell: fish
+  aliases: {}
+YAML
 }

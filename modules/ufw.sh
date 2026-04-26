@@ -3,6 +3,8 @@
 # Reads: CONFIG (path to vm-init.yml)
 
 install_ufw() {
+  require_commands apt-get sed || return 1
+
   if ! is_installed ufw; then
     log_step "Installing ufw"
     run_quiet apt-get update -qq

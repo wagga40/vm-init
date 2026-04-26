@@ -278,7 +278,7 @@ usage() {
   print_status_legend
 
   print_help_section "Examples:"
-  _usage_example "Default full run"                                  "sudo ${SCRIPT_NAME}"
+  _usage_example "Default minimal run"                               "sudo ${SCRIPT_NAME}"
   _usage_example "Preview what would happen without changing system" "${SCRIPT_NAME} --dry-run"
   _usage_example "Show which modules are enabled in the config"      "${SCRIPT_NAME} --list-modules"
   _usage_example "Rerun only DNS after a failure"                    "sudo ${SCRIPT_NAME} --only dns"
@@ -287,19 +287,30 @@ usage() {
 
   print_help_section "Recovery:"
   echo -e "  If DNS is broken after provisioning, run:"
-  echo -e "    ${_C_CYAN}sudo modules/recover-dns.sh --with-fallback${_C_RESET}"
-  echo -e "  (also installed as ${_C_CYAN}/usr/local/sbin/vm-init-recover-dns${_C_RESET} when the DNS module runs)"
+  echo -e "    ${_C_CYAN}sudo vm-init-recover-dns --with-fallback${_C_RESET}"
+  echo -e "  From a source checkout, run: ${_C_CYAN}sudo modules/recover-dns.sh --with-fallback${_C_RESET}"
 
   echo ""
   echo -e "${_C_DIM}Environment: NO_COLOR / VM_INIT_NO_COLOR disable color, VM_INIT_FORCE_COLOR=1 forces it.${_C_RESET}"
   echo ""
 }
 
+require_option_value() {
+  local flag="$1"
+  local value="${2-}"
+  if [[ -z "$value" || "$value" == --* ]]; then
+    log_fail "Missing value for ${flag}"
+    echo "" >&2
+    usage >&2
+    exit 1
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --config|-c)             CONFIG="$2"; CONFIG_EXPLICIT=1; shift 2 ;;
-    --only)                   VM_INIT_ONLY="$2"; shift 2 ;;
-    --skip)                   VM_INIT_SKIP="$2"; shift 2 ;;
+    --config|-c)             require_option_value "$1" "${2-}"; CONFIG="$2"; CONFIG_EXPLICIT=1; shift 2 ;;
+    --only)                   require_option_value "$1" "${2-}"; VM_INIT_ONLY="$2"; shift 2 ;;
+    --skip)                   require_option_value "$1" "${2-}"; VM_INIT_SKIP="$2"; shift 2 ;;
     --dry-run)                export VM_INIT_DRY_RUN=1; shift ;;
     --update|-u)             VM_INIT_DO_UPDATE=1; shift ;;
     --list-modules|-l)       VM_INIT_LIST_MODULES=1; shift ;;
@@ -307,7 +318,7 @@ while [[ $# -gt 0 ]]; do
     --force|-f)              export VM_INIT_FORCE=1; shift ;;
     --verbose)                export VM_INIT_VERBOSE=1; shift ;;
     --no-log)                 export VM_INIT_NO_LOG=1; shift ;;
-    --log-file)               LOG_FILE="$2"; shift 2 ;;
+    --log-file)               require_option_value "$1" "${2-}"; LOG_FILE="$2"; shift 2 ;;
     --version)                echo "vm-init ${VM_INIT_VERSION}"; exit 0 ;;
     --help|-h)                usage; exit 0 ;;
     *)                        echo -e "${_C_RED}${_SYM_FAIL}${_C_RESET} Unknown option: ${_C_BOLD}$1${_C_RESET}" >&2; echo "" >&2; usage >&2; exit 1 ;;
@@ -349,7 +360,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # --write-default-config: materialize embedded or sibling default to
-# /etc/vm-init/vm-init.yml so users can edit it in place.
+# ./vm-init.yml so users can edit it before opting into modules.
 # ---------------------------------------------------------------------------
 
 write_default_config_cmd() {

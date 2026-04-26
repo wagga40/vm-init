@@ -36,12 +36,17 @@ install_fisher_tide() {
   if [[ "$user" == "root" ]]; then
     run_quiet fish -c "$fish_cmd"
   else
-    run_quiet sudo -u "$user" fish -c "$fish_cmd" || true
+    if ! run_quiet sudo -u "$user" fish -c "$fish_cmd"; then
+      log_fail "Failed to install Fisher/Tide for ${user}"
+      return 1
+    fi
     chown -R "$user:$user" "${home_dir}/.config" 2>/dev/null || true
   fi
 }
 
 install_shell() {
+  require_commands usermod chsh getent awk || return 1
+
   local default_shell
   default_shell=$(yq '.shell.default_shell // "fish"' "$CONFIG")
 
@@ -52,10 +57,20 @@ install_shell() {
   fi
 
   log_step "Setting ${default_shell} as default shell"
-  usermod --shell "$shell_path" root
+  if ! usermod --shell "$shell_path" root; then
+    log_fail "Failed to change default shell for root"
+    return 1
+  fi
+  local shell_change_errors=0
   while IFS=: read -r u _home; do
-    chsh -s "$shell_path" "$u" 2>/dev/null || true
+    if ! chsh -s "$shell_path" "$u" 2>/dev/null; then
+      log_warn "Failed to change default shell for ${u}"
+      shell_change_errors=$((shell_change_errors + 1))
+    fi
   done < <(human_users)
+  if (( shell_change_errors > 0 )); then
+    return 1
+  fi
 
   local fisher_enabled
   fisher_enabled=$(yq_get '.shell.fisher' true "$CONFIG")

@@ -2,6 +2,8 @@
 # Docker engine + compose installation module.
 
 install_docker() {
+  require_commands apt-get dpkg gpg lsb_release systemctl || return 1
+
   if is_installed docker && ! should_force; then
     log_skip "Docker already installed"
     return 0

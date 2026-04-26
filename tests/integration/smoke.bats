@@ -123,6 +123,15 @@ SH
   [[ "$output" == *"Usage:"* ]]
 }
 
+@test "value-taking vm-init flags fail clearly when missing a value" {
+  for flag in --config -c --only --skip --log-file; do
+    run "$VM_INIT_SH" "$flag"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Missing value for ${flag}"* ]]
+    [[ "$output" == *"Usage:"* ]]
+  done
+}
+
 # ---------- --write-default-config (repo layout) ----------
 
 @test "--write-default-config writes ./vm-init.yml in the current directory" {
@@ -180,6 +189,13 @@ SH
   [ "$status" -eq 0 ]
   [[ "$output" == *"off"* ]]
   [[ "$output" == *"docker"* ]]
+}
+
+@test "default config keeps only must-have modules enabled" {
+  run "$VM_INIT_SH" --list-modules --config "$VM_INIT_DEFAULT_CONFIG"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"on: 2"* ]]
+  [[ "$output" == *"off: 7"* ]]
 }
 
 # ---------- --dry-run ----------

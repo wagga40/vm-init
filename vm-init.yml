@@ -1,5 +1,6 @@
 # vm-init.yml — configuration for vm-init.sh
-# Sensible defaults for an opinionated Ubuntu machine.
+# Minimal defaults for a usable Ubuntu development shell.
+# Advanced networking, security, Docker, and GitHub tooling are opt-in below.
 
 apt:
   enabled: true
@@ -7,17 +8,14 @@ apt:
     shell: [fish]
     editor: [vim, neovim]
     build: [build-essential, git, curl, wget]
-    system: [htop, ca-certificates, gnupg, lsb-release]
-    archive: [p7zip-full, unzip, fastfetch]
-    cli: [bat, lsd, tree, jq, yq, fzf, ripgrep, fd-find, procs, du-dust, duf, hyperfine, tealdeer]
+    system: [ca-certificates, gnupg, lsb-release]
+    archive: [unzip]
+    cli: [jq, fzf, ripgrep, fd-find]
     python: [python3-pip, python3-venv, pipx]
-    dev: [shellcheck, direnv, sqlite3, postgresql-client, tmux, moreutils]
-    test: [bats]
-    vpn: [wireguard]
     extra: []
 
 ufw:
-  enabled: true
+  enabled: false
   ipv6: true
   defaults:
     incoming: deny
@@ -26,7 +24,7 @@ ufw:
     - OpenSSH
 
 fail2ban:
-  enabled: true
+  enabled: false
   backend: systemd
   bantime: 1h
   findtime: 10m
@@ -40,7 +38,7 @@ fail2ban:
       enabled: true
 
 dns:
-  enabled: true
+  enabled: false
   server: https://base.dns.mullvad.net/dns-query
   listen_address: 127.0.0.1
   listen_port: 5353
@@ -49,19 +47,19 @@ dns:
     - 149.112.112.112
 
 docker:
-  enabled: true
+  enabled: false
 
 python:
-  enabled: true
-  tools: [pdm, poetry, uv, pre-commit]
+  enabled: false
+  tools: [uv, pre-commit]
 
 github_tools:
-  enabled: true
+  enabled: false
   gh: true
-  act: true
+  act: false
 
 github_releases:
-  enabled: true
+  enabled: false
   generic:
     - repo: jesseduffield/lazydocker
       asset_pattern: "lazydocker_{version}_Linux_{arch}.tar.gz"
@@ -83,9 +81,7 @@ github_releases:
 shell:
   enabled: true
   default_shell: fish
-  fisher: true
-  tide: true
-  aliases:
-    cat: batcat
-    ll: "lsd -ahlF --header --group-dirs first"
-  direnv: true
+  fisher: false
+  tide: false
+  aliases: {}
+  direnv: false

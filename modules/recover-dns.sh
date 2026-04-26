@@ -68,11 +68,22 @@ usage() {
   echo ""
 }
 
+require_option_value() {
+  local flag="$1"
+  local value="${2-}"
+  if [[ -z "$value" || "$value" == --* ]]; then
+    log_fail "Missing value for ${flag}"
+    echo "" >&2
+    usage >&2
+    exit 1
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --iface)         IFACE="$2"; shift 2 ;;
+    --iface)         require_option_value "$1" "${2-}"; IFACE="$2"; shift 2 ;;
     --with-fallback) WITH_FALLBACK=1; shift ;;
-    --fallback)      FALLBACK_DNS="$2"; shift 2 ;;
+    --fallback)      require_option_value "$1" "${2-}"; FALLBACK_DNS="$2"; shift 2 ;;
     --help|-h)       usage; exit 0 ;;
     *)               echo -e "${_C_RED}${_SYM_FAIL}${_C_RESET} Unknown option: ${_C_BOLD}$1${_C_RESET}" >&2
                      echo "" >&2

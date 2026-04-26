@@ -148,7 +148,7 @@ dnsproxy_listening_on() {
         END { exit found ? 0 : 1 }
       '
   else
-    return 0
+    return 1
   fi
 }
 
@@ -175,23 +175,25 @@ verify_doh_resolves() {
 }
 
 install_dns() {
+  require_commands dpkg jq systemctl getent ss || return 1
+
   if ! install_dnsproxy_binary; then
     log_warn "DNS module skipped — dnsproxy binary could not be installed"
     log_warn "DoH/DoT is NOT active. DNS uses system defaults."
     log_info "Re-run with --force after resolving the issue, or set dns.enabled: false"
-    return 0
+    return 1
   fi
 
   if ! ensure_systemd_resolved; then
     log_warn "DNS module skipped — systemd-resolved is unavailable"
     log_warn "DoH/DoT is NOT active. DNS uses system defaults."
-    return 0
+    return 1
   fi
 
   local upstream listen_address listen_port
   if ! upstream=$(dns_upstream_from_config); then
     log_warn "DNS module skipped — invalid dns.server in config"
-    return 0
+    return 1
   fi
   listen_address=$(yq '.dns.listen_address // "127.0.0.1"' "$CONFIG")
   listen_port=$(yq '.dns.listen_port // 5353' "$CONFIG")
@@ -294,12 +296,18 @@ EOF
   log_step "Ensuring resolv.conf uses the stub resolver"
   ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
-  systemctl daemon-reload >/dev/null 2>&1 || true
-  systemctl enable dnsproxy vm-init-dns-pin >/dev/null 2>&1 || true
+  if ! systemctl daemon-reload >/dev/null 2>&1; then
+    log_warn "systemd daemon-reload failed after writing DNS units"
+    return 1
+  fi
+  if ! systemctl enable dnsproxy vm-init-dns-pin >/dev/null 2>&1; then
+    log_warn "Failed to enable dnsproxy/vm-init-dns-pin at boot"
+    return 1
+  fi
   if ! systemctl restart dnsproxy >/dev/null 2>&1; then
     log_warn "dnsproxy failed to start"
     log_info "Debug: journalctl -u dnsproxy -n 30 --no-pager"
-    return 0
+    return 1
   fi
 
   if ! wait_for_dnsproxy "$listen_address" "$listen_port"; then
@@ -308,14 +316,22 @@ EOF
     log_info "Debug: journalctl -u dnsproxy -n 30 --no-pager"
     log_info "Debug: ss -lunp | grep ${listen_port}"
     log_info "Recovery: modules/recover-dns.sh --with-fallback"
-    return 0
+    return 1
   fi
 
-  systemctl restart systemd-resolved >/dev/null 2>&1 || true
+  if ! systemctl restart systemd-resolved >/dev/null 2>&1; then
+    log_warn "systemd-resolved failed to restart"
+    log_info "Debug: systemctl status systemd-resolved --no-pager"
+    return 1
+  fi
   # Apply the boot-time pinning right now too (and surface failures via the
   # oneshot's exit status); fall back to invoking the helper directly.
-  systemctl restart vm-init-dns-pin >/dev/null 2>&1 \
-    || /usr/local/sbin/vm-init-dns-pin "$resolved_dns_target" >/dev/null 2>&1 || true
+  if ! systemctl restart vm-init-dns-pin >/dev/null 2>&1 \
+      && ! /usr/local/sbin/vm-init-dns-pin "$resolved_dns_target" >/dev/null 2>&1; then
+    log_warn "Failed to apply per-link DNS pinning"
+    log_info "Debug: systemctl status vm-init-dns-pin --no-pager"
+    return 1
+  fi
 
   if verify_doh_resolves; then
     log_ok "dnsproxy configured and resolving via ${upstream}"
@@ -325,5 +341,6 @@ EOF
     log_info "Debug: resolvectl query example.com"
     log_info "Debug: journalctl -u dnsproxy -n 30 --no-pager"
     log_info "Recovery: modules/recover-dns.sh --with-fallback"
+    return 1
   fi
 }

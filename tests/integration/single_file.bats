@@ -128,15 +128,16 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"DRY RUN"* ]]
   [[ "$output" == *"Dry run complete"* ]]
-  [[ "$output" == *"ok: 9"* ]]
+  [[ "$output" == *"ok: 2"* ]]
+  [[ "$output" == *"skipped: 7"* ]]
 }
 
 @test "bundle: explicit --config overrides embedded default" {
   if ! command -v yq >/dev/null 2>&1; then
     skip "yq v4 (mikefarah) not installed"
   fi
-  # Build a config where only dns is enabled. The embedded default has all
-  # 9 modules enabled, so we'd see a very different ok/skipped count.
+  # Build a config where only dns is enabled. The embedded default enables
+  # apt + shell, so we'd see a different ok/skipped count.
   user_cfg="$TEST_TMPDIR/only-dns.yml"
   cat > "$user_cfg" <<'YAML'
 apt: {enabled: false}
@@ -245,7 +246,8 @@ YAML
   [ "$status" -eq 0 ]
   run "$BUNDLE" --dry-run --config "${workdir}/vm-init.yml"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"ok: 9"* ]]
+  [[ "$output" == *"ok: 2"* ]]
+  [[ "$output" == *"skipped: 7"* ]]
 }
 
 @test "bundle: --only unknown errors with clear message" {
@@ -270,5 +272,6 @@ YAML
   cd "$empty_dir"
   run ./vm-init --dry-run
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
-  [[ "$output" == *"ok: 9"* ]]
+  [[ "$output" == *"ok: 2"* ]]
+  [[ "$output" == *"skipped: 7"* ]]
 }

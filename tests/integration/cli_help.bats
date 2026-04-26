@@ -65,6 +65,20 @@ setup() {
   [[ "$output" == *"Usage:"* ]]
 }
 
+@test "install.sh value-taking flags fail clearly when missing a value" {
+  for flag in --version --prefix; do
+    run bash "$INSTALL_SH" "$flag"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Missing value for ${flag}"* ]]
+    [[ "$output" == *"Usage:"* ]]
+  done
+}
+
+@test "install.sh uses bounded curl downloads" {
+  grep -q -- '--connect-timeout' "$INSTALL_SH"
+  grep -q -- '--max-time' "$INSTALL_SH"
+}
+
 # ---------- modules/recover-dns.sh --help ----------
 
 @test "recover-dns.sh --help exits 0 and mentions all CLI flags" {
@@ -83,6 +97,15 @@ setup() {
   [ "$status" -eq 1 ]
   [[ "$output" == *"Unknown option"* ]]
   [[ "$output" == *"Usage:"* ]]
+}
+
+@test "recover-dns.sh value-taking flags fail clearly when missing a value" {
+  for flag in --iface --fallback; do
+    run bash "$RECOVER_SH" "$flag"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Missing value for ${flag}"* ]]
+    [[ "$output" == *"Usage:"* ]]
+  done
 }
 
 # ---------- color detection ----------

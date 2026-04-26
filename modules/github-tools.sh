@@ -3,6 +3,8 @@
 # Reads: CONFIG (path to vm-init.yml)
 
 install_gh() {
+  require_commands apt-get dpkg || return 1
+
   if is_installed gh && ! should_force; then
     log_skip "gh already installed"
     return 0
@@ -27,6 +29,8 @@ https://cli.github.com/packages stable main" \
 }
 
 install_act() {
+  require_commands bash || return 1
+
   if is_installed act && ! should_force; then
     log_skip "act already installed"
     return 0

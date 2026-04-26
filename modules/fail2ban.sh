@@ -35,6 +35,8 @@ EOF
 }
 
 install_fail2ban() {
+  require_commands apt-get systemctl || return 1
+
   if ! is_installed fail2ban-client; then
     log_step "Installing fail2ban"
     export DEBIAN_FRONTEND=noninteractive
@@ -81,12 +83,16 @@ EOF
   } > /etc/fail2ban/jail.d/vm-init.local
 
   log_step "Enabling and restarting fail2ban"
-  systemctl enable fail2ban >/dev/null 2>&1 || true
+  if ! systemctl enable fail2ban >/dev/null 2>&1; then
+    log_warn "fail2ban failed to enable at boot"
+    log_info "Debug: systemctl status fail2ban --no-pager"
+    return 1
+  fi
   if ! systemctl restart fail2ban >/dev/null 2>&1; then
     log_warn "fail2ban failed to restart"
     log_info "Debug: journalctl -u fail2ban -n 30 --no-pager"
     log_info "Debug: fail2ban-client -d   # dump effective config"
-    return 0
+    return 1
   fi
 
   if systemctl is-active --quiet fail2ban; then
@@ -94,5 +100,6 @@ EOF
   else
     log_warn "fail2ban is not active after restart"
     log_info "Debug: systemctl status fail2ban --no-pager"
+    return 1
   fi
 }

@@ -136,6 +136,8 @@ install_somo() {
 # --- Entry point ---
 
 install_github_releases() {
+  require_commands dpkg jq tar || return 1
+
   install_github_releases_generic
 
   local custom_tools=("bandwhich" "vortix" "somo")
