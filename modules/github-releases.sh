@@ -133,6 +133,43 @@ install_somo() {
   log_ok "somo installed"
 }
 
+install_systemd_manager_tui() {
+  if is_installed systemd-manager-tui && ! should_force; then
+    log_skip "systemd-manager-tui already installed"
+    return 0
+  fi
+
+  log_step "Installing systemd-manager-tui"
+
+  local sys_arch
+  sys_arch=$(dpkg --print-architecture)
+  case "$sys_arch" in
+    amd64|arm64) ;;
+    *) log_skip "systemd-manager-tui: only amd64/arm64 .deb available (skip on ${sys_arch})"
+       return 0 ;;
+  esac
+
+  local tag version deb_url deb_tmp
+  tag=$(github_latest_version "Matheus-git/systemd-manager-tui") || return 1
+  version="${tag#v}"
+  deb_url="https://github.com/Matheus-git/systemd-manager-tui/releases/download/${tag}/systemd-manager-tui_${version}_${sys_arch}.deb"
+
+  deb_tmp=$(mktemp --suffix=.deb)
+  # shellcheck disable=SC2064
+  trap "rm -f -- '${deb_tmp}'" RETURN
+
+  if ! download_file "$deb_url" "$deb_tmp"; then
+    log_fail "Failed to download systemd-manager-tui from ${deb_url}"
+    return 1
+  fi
+  try_verify_github_asset "$deb_tmp" "${deb_url}.sha256" || return 1
+  if ! run_quiet dpkg -i "$deb_tmp"; then
+    log_fail "dpkg -i failed for systemd-manager-tui"
+    return 1
+  fi
+  log_ok "systemd-manager-tui installed"
+}
+
 # --- Entry point ---
 
 install_github_releases() {
@@ -140,7 +177,7 @@ install_github_releases() {
 
   install_github_releases_generic
 
-  local custom_tools=("bandwhich" "vortix" "somo")
+  local custom_tools=("bandwhich" "vortix" "somo" "systemd_manager_tui")
   for tool in "${custom_tools[@]}"; do
     local enabled
     enabled=$(yq ".github_releases.custom.${tool} // false" "$CONFIG")
