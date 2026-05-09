@@ -143,14 +143,153 @@ print_update_notice_if_needed() {
   echo -e "  ${_C_DIM}Latest:${_C_RESET}  ${_C_BOLD}${latest#v}${_C_RESET}"
   echo -e "  ${_C_DIM}Download:${_C_RESET} ${_C_CYAN}${VM_INIT_UPDATE_DOWNLOAD_URL}${_C_RESET}"
 
-  case "${VM_INIT_RUN_MODE}" in
-    installed_tarball)
-      echo -e "  ${_C_DIM}Tip:${_C_RESET} run ${_C_CYAN}sudo ${SCRIPT_NAME} --update${_C_RESET} to refresh /opt/vm-init."
-      ;;
-    bundled_single_file|local_checkout)
-      echo -e "  ${_C_DIM}Tip:${_C_RESET} download the latest release asset or update your checkout before the next run."
-      ;;
+  echo -e "  ${_C_DIM}Tip:${_C_RESET} run ${_C_CYAN}sudo ${SCRIPT_NAME} --update${_C_RESET} to upgrade in place."
+}
+
+# In-place upgrade of a single-file bundle. Downloads the latest release
+# asset, verifies its sha256 sidecar, and replaces the running binary on the
+# same filesystem so the swap is atomic.
+update_bundled_single_file() {
+  local latest="${1:-}"
+  local target target_dir tmpdir tmpbin bin_url sha_url rc=0
+
+  target="${SCRIPT_DIR}/${SCRIPT_NAME}"
+  if [[ ! -f "$target" ]]; then
+    log_fail "Cannot locate current bundle at ${target}"
+    return 1
+  fi
+  target_dir="$(dirname "$target")"
+
+  if [[ $EUID -ne 0 && ! -w "$target_dir" ]]; then
+    log_fail "Update requires root to write ${target_dir}. Re-run with: sudo ${SCRIPT_NAME} --update"
+    return 1
+  fi
+
+  if ! command -v curl >/dev/null 2>&1; then
+    log_fail "curl is required for in-place updates"
+    return 1
+  fi
+
+  log_step "Updating vm-init bundle at ${target}"
+  if [[ -n "$latest" ]]; then
+    if ! is_version_newer "$latest" "$VM_INIT_VERSION"; then
+      log_ok "Already at the latest version (${VM_INIT_VERSION})"
+      return 0
+    fi
+    log_info "Upgrading ${VM_INIT_VERSION} → ${latest#v}"
+  fi
+
+  bin_url="${VM_INIT_UPDATE_DOWNLOAD_URL}"
+  sha_url="${bin_url}.sha256"
+
+  tmpdir=$(mktemp -d)
+  tmpbin="${tmpdir}/vm-init"
+
+  if ! run_quiet download_file "$bin_url" "$tmpbin"; then
+    log_fail "Failed to download ${bin_url}"
+    rm -rf "$tmpdir"
+    return 1
+  fi
+
+  log_step "Verifying checksum"
+  set +e
+  verify_sha256 "$tmpbin" --from "$sha_url"
+  rc=$?
+  set -e
+  case "$rc" in
+    0) log_ok "Checksum matches" ;;
+    1) log_fail "Checksum mismatch — refusing to install"; rm -rf "$tmpdir"; return 1 ;;
+    2) log_fail "Could not download checksum from ${sha_url}"; rm -rf "$tmpdir"; return 1 ;;
+    *) log_fail "Could not verify checksum (rc=${rc})"; rm -rf "$tmpdir"; return 1 ;;
   esac
+
+  if ! bash -n "$tmpbin"; then
+    log_fail "Downloaded bundle failed bash syntax check — refusing to install"
+    rm -rf "$tmpdir"
+    return 1
+  fi
+
+  chmod +x "$tmpbin"
+  # Stage inside the target directory so the rename is atomic on the same fs.
+  local staged
+  staged="$(mktemp "${target_dir}/.vm-init.XXXXXX" 2>/dev/null || true)"
+  if [[ -z "$staged" ]]; then
+    log_fail "Cannot create staging file in ${target_dir}"
+    rm -rf "$tmpdir"
+    return 1
+  fi
+  if ! cp "$tmpbin" "$staged"; then
+    log_fail "Failed to stage new bundle in ${target_dir}"
+    rm -f "$staged"; rm -rf "$tmpdir"
+    return 1
+  fi
+  # Preserve the existing binary's mode (falls back to 0755 if stat is unusable).
+  local mode=""
+  mode=$(stat -c '%a' "$target" 2>/dev/null || stat -f '%Lp' "$target" 2>/dev/null || echo "")
+  [[ -n "$mode" ]] || mode="755"
+  chmod "$mode" "$staged" 2>/dev/null || chmod 755 "$staged"
+  if ! mv -f "$staged" "$target"; then
+    log_fail "Failed to replace ${target}"
+    rm -f "$staged"; rm -rf "$tmpdir"
+    return 1
+  fi
+
+  rm -rf "$tmpdir"
+  log_done "vm-init updated at ${target}"
+  return 0
+}
+
+# Update a local git checkout by fast-forwarding the current branch to its
+# upstream. Aborts (without touching the tree) when there are local changes,
+# the branch is detached, or no upstream is configured.
+update_local_checkout() {
+  local repo="$SCRIPT_DIR" branch upstream before after
+
+  if ! command -v git >/dev/null 2>&1; then
+    log_fail "git is required to update a local checkout"
+    return 1
+  fi
+  if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    log_fail "Not a git repository: ${repo}"
+    return 1
+  fi
+
+  log_step "Updating local checkout at ${repo}"
+
+  if ! git -C "$repo" diff-index --quiet HEAD -- 2>/dev/null \
+     || [[ -n "$(git -C "$repo" ls-files --others --exclude-standard)" ]]; then
+    log_fail "Working tree has uncommitted changes — commit or stash, then re-run"
+    return 1
+  fi
+  branch="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [[ -z "$branch" || "$branch" == "HEAD" ]]; then
+    log_fail "Detached HEAD — checkout a branch and re-run"
+    return 1
+  fi
+  upstream="$(git -C "$repo" rev-parse --abbrev-ref "${branch}@{upstream}" 2>/dev/null || true)"
+  if [[ -z "$upstream" ]]; then
+    log_fail "Branch ${branch} has no upstream tracking branch (set one with 'git branch --set-upstream-to=...')"
+    return 1
+  fi
+
+  before="$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
+
+  if ! run_quiet git -C "$repo" fetch --tags --quiet; then
+    log_fail "git fetch failed"
+    return 1
+  fi
+  if ! run_quiet git -C "$repo" merge --ff-only --quiet "$upstream"; then
+    log_fail "Cannot fast-forward ${branch} to ${upstream} — diverged history; resolve manually"
+    return 1
+  fi
+
+  after="$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)"
+  if [[ "$before" == "$after" ]]; then
+    log_ok "Already up to date (${before:0:7})"
+  else
+    log_done "Local checkout updated: ${before:0:7} → ${after:0:7}"
+  fi
+  return 0
 }
 
 run_update_cmd() {
@@ -182,23 +321,12 @@ run_update_cmd() {
       return $?
       ;;
     bundled_single_file)
-      echo ""
-      echo -e "${_C_BOLD}vm-init update${_C_RESET} (${_C_CYAN}single-file mode${_C_RESET})"
-      [[ -n "$latest" ]] && echo -e "  ${_C_DIM}Latest:${_C_RESET} ${_C_BOLD}${latest#v}${_C_RESET}"
-      echo -e "  Download: ${_C_CYAN}${VM_INIT_UPDATE_DOWNLOAD_URL}${_C_RESET}"
-      echo -e "  Replace the current binary (example):"
-      echo -e "    ${_C_CYAN}curl -fsSL ${VM_INIT_UPDATE_DOWNLOAD_URL} -o /usr/local/sbin/vm-init${_C_RESET}"
-      echo -e "    ${_C_CYAN}sudo chmod +x /usr/local/sbin/vm-init${_C_RESET}"
-      return 0
+      update_bundled_single_file "$latest"
+      return $?
       ;;
     local_checkout|*)
-      echo ""
-      echo -e "${_C_BOLD}vm-init update${_C_RESET} (${_C_CYAN}local checkout mode${_C_RESET})"
-      [[ -n "$latest" ]] && echo -e "  ${_C_DIM}Latest:${_C_RESET} ${_C_BOLD}${latest#v}${_C_RESET}"
-      echo -e "  Download: ${_C_CYAN}${VM_INIT_UPDATE_DOWNLOAD_URL}${_C_RESET}"
-      echo -e "  Update this checkout with git or install the managed release under /opt/vm-init:"
-      echo -e "    ${_C_CYAN}curl -fsSL https://raw.githubusercontent.com/${VM_INIT_UPDATE_REPO}/main/scripts/install.sh | sudo bash${_C_RESET}"
-      return 0
+      update_local_checkout
+      return $?
       ;;
   esac
 }
