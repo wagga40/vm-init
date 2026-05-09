@@ -239,6 +239,29 @@ is_installed() {
   command -v "$1" >/dev/null 2>&1
 }
 
+# Run a command with Debian/Ubuntu service auto-start suppressed via the
+# standard policy-rc.d mechanism. Used to keep `apt-get install` from blocking
+# on a Type=notify postinst service (e.g. fail2ban) before we've written its
+# config and are ready to start it ourselves.
+#
+# Usage: apt_no_service_start apt-get install -y -qq fail2ban
+apt_no_service_start() {
+  local policy=/usr/sbin/policy-rc.d existed=0 rc=0
+  if [[ -e "$policy" ]]; then
+    existed=1
+  else
+    printf '#!/bin/sh\nexit 101\n' > "$policy"
+    chmod +x "$policy"
+  fi
+
+  "$@" || rc=$?
+
+  if (( ! existed )); then
+    rm -f "$policy"
+  fi
+  return "$rc"
+}
+
 require_commands() {
   local missing=()
   local cmd

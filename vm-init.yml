@@ -5,7 +5,7 @@
 apt:
   enabled: true
   packages:
-    shell: [fish]
+    shell: [fish, lsd]
     editor: [vim, neovim]
     build: [build-essential, git, curl, wget]
     system: [ca-certificates, gnupg, lsb-release]
