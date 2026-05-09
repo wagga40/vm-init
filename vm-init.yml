@@ -46,6 +46,15 @@ dns:
     - 9.9.9.9
     - 149.112.112.112
 
+kernel:
+  # Kernel boot parameters via /etc/default/grub. Disabled by default;
+  # changes only take effect after reboot.
+  enabled: false
+  # Append `mitigations=off` to GRUB_CMDLINE_LINUX_DEFAULT (disables CPU
+  # vulnerability mitigations like Spectre/Meltdown for performance).
+  # Only applied when this section is enabled.
+  mitigations_off: false
+
 docker:
   enabled: false
 

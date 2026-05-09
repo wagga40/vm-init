@@ -351,6 +351,7 @@ VM_INIT_MODULES=(
   "apt:apt.sh:install_apt"
   "ufw:ufw.sh:install_ufw"
   "fail2ban:fail2ban.sh:install_fail2ban"
+  "kernel:kernel.sh:install_kernel"
   "dns:dns.sh:install_dns"
   "docker:docker.sh:install_docker"
   "python:python.sh:install_python"
@@ -400,7 +401,7 @@ usage() {
   _usage_opt "--help, -h"         "Show this help"
 
   print_help_section "Modules:"
-  echo "  apt, ufw, fail2ban, dns, docker, python, github_tools, github_releases, shell"
+  echo "  apt, ufw, fail2ban, kernel, dns, docker, python, github_tools, github_releases, shell"
 
   print_help_section "Status legend:"
   print_status_legend
@@ -852,6 +853,15 @@ dry_run_preview() {
       _dry_run_line "Would install ${_C_BOLD}fail2ban${_C_RESET} and enable its service"
       _dry_run_line "Policy:       bantime=${_C_BOLD}${f2b_bantime}${_C_RESET}, maxretry=${_C_BOLD}${f2b_maxretry}${_C_RESET}, banaction=${_C_BOLD}${f2b_banaction}${_C_RESET}"
       _dry_run_line "Active jails: ${_C_BOLD}${f2b_jails:-<none>}${_C_RESET}"
+      ;;
+    kernel)
+      local mitigations_off
+      mitigations_off=$(yq_get '.kernel.mitigations_off' false "$CONFIG")
+      if [[ "$mitigations_off" == "true" ]]; then
+        _dry_run_line "Would add ${_C_BOLD}mitigations=off${_C_RESET} to GRUB_CMDLINE_LINUX_DEFAULT and run update-grub (reboot required)"
+      else
+        _dry_run_line "Would ensure ${_C_BOLD}mitigations=off${_C_RESET} is absent from GRUB_CMDLINE_LINUX_DEFAULT"
+      fi
       ;;
     dns)
       local server port

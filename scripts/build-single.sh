@@ -37,6 +37,7 @@ MODULES=(
   "${REPO_ROOT}/modules/apt.sh"
   "${REPO_ROOT}/modules/ufw.sh"
   "${REPO_ROOT}/modules/fail2ban.sh"
+  "${REPO_ROOT}/modules/kernel.sh"
   "${REPO_ROOT}/modules/dns.sh"
   "${REPO_ROOT}/modules/docker.sh"
   "${REPO_ROOT}/modules/python.sh"
