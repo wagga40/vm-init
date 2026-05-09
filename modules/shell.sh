@@ -101,6 +101,11 @@ install_shell() {
     local key value
     while IFS= read -r key; do
       value=$(yq ".shell.aliases.${key}" "$CONFIG")
+      local cmd="${value%% *}"
+      if ! command -v "$cmd" >/dev/null 2>&1; then
+        log_skip "alias ${key} (${cmd} not installed)"
+        continue
+      fi
       local alias_line="alias ${key}=\"${value}\""
 
       # Apply to root
@@ -122,6 +127,14 @@ install_shell() {
   local direnv_enabled
   direnv_enabled=$(yq_get '.shell.direnv' true "$CONFIG")
   if [[ "$direnv_enabled" == "true" ]]; then
+    if ! is_installed direnv; then
+      log_step "Installing direnv"
+      if ! run_quiet apt-get install -y -qq direnv; then
+        log_fail "Failed to install direnv"
+        return 1
+      fi
+      log_ok "direnv installed"
+    fi
     log_step "Configuring direnv and PATH"
     echo 'direnv hook fish | source' > /etc/fish/conf.d/direnv.fish
     echo 'fish_add_path -g /usr/local/bin' > /etc/fish/conf.d/pipx-path.fish

@@ -83,5 +83,6 @@ shell:
   default_shell: fish
   fisher: false
   tide: false
-  aliases: {}
+  aliases:
+    ll: lsd -ahlF --header --group-dirs first
   direnv: false
