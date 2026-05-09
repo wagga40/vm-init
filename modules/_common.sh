@@ -77,6 +77,15 @@ _vm_init_detect_ui
 export VM_INIT_WARN_COUNT
 export VM_INIT_CMD_TIMEOUT
 
+# Make every child apt/dpkg invocation non-interactive. needrestart (default
+# on Ubuntu Server 22.04+) ignores DEBIAN_FRONTEND and will pop an ncurses
+# prompt asking which services to restart after libssl/libpam/etc. updates,
+# hanging unattended provisioning. SUSPEND=1 skips needrestart entirely;
+# MODE=a is a belt-and-braces fallback for older versions that ignore SUSPEND.
+export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
+export NEEDRESTART_MODE="${NEEDRESTART_MODE:-a}"
+export NEEDRESTART_SUSPEND="${NEEDRESTART_SUSPEND:-1}"
+
 # ---------- Logging ----------
 
 log_step()  { echo -e "${_C_CYAN}${_C_BOLD}${_SYM_ARROW}${_C_RESET} ${_C_BOLD}$1${_C_RESET}"; }
