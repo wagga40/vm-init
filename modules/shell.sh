@@ -129,7 +129,7 @@ install_shell() {
   if [[ "$direnv_enabled" == "true" ]]; then
     if ! is_installed direnv; then
       log_step "Installing direnv"
-      if ! run_quiet apt-get install -y -qq direnv; then
+      if ! run_quiet apt_get install -y -q direnv; then
         log_fail "Failed to install direnv"
         return 1
       fi

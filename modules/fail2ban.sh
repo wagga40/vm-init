@@ -43,17 +43,15 @@ install_fail2ban() {
   # after writing /etc/fail2ban/jail.d/vm-init.local.
   if ! is_installed fail2ban-client; then
     log_step "Installing fail2ban"
-    export DEBIAN_FRONTEND=noninteractive
-    run_quiet apt-get update -qq
-    if ! apt_no_service_start run_quiet apt-get install -y -qq fail2ban; then
+    run_quiet apt_get update -q
+    if ! apt_no_service_start run_quiet apt_get install -y -q fail2ban; then
       log_fail "Failed to install fail2ban package"
       return 1
     fi
     log_ok "fail2ban installed"
   elif should_force; then
     log_step "Reinstalling fail2ban (--force)"
-    export DEBIAN_FRONTEND=noninteractive
-    apt_no_service_start run_quiet apt-get install -y -qq --reinstall fail2ban
+    apt_no_service_start run_quiet apt_get install -y -q --reinstall fail2ban
     log_ok "fail2ban reinstalled"
   else
     log_skip "fail2ban already installed"

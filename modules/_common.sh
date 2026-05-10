@@ -86,6 +86,67 @@ export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
 export NEEDRESTART_MODE="${NEEDRESTART_MODE:-a}"
 export NEEDRESTART_SUSPEND="${NEEDRESTART_SUSPEND:-1}"
 
+# Wait until the apt/dpkg lock files are free. On Ubuntu cloud images the
+# first-boot apt-daily-upgrade.service can hold these for many minutes; without
+# this we'd either fail with "Could not get lock" or hang opaquely inside apt.
+# Returns 0 when free, 124 on timeout.
+wait_apt_lock() {
+  local timeout="${VM_INIT_APT_LOCK_TIMEOUT:-1800}"
+  local interval=3 elapsed=0 announced=0 held=0
+  local lock locks=(
+    /var/lib/dpkg/lock-frontend
+    /var/lib/dpkg/lock
+    /var/lib/apt/lists/lock
+    /var/cache/apt/archives/lock
+  )
+  while :; do
+    held=0
+    for lock in "${locks[@]}"; do
+      [[ -e "$lock" ]] || continue
+      if ! flock -n "$lock" -c true 2>/dev/null; then
+        held=1
+        break
+      fi
+    done
+    (( held )) || return 0
+    if (( elapsed >= timeout )); then
+      log_fail "apt/dpkg lock still held after ${timeout}s — giving up"
+      return 124
+    fi
+    if (( ! announced )); then
+      # Bypass run_quiet's capture so the user sees we're waiting instead of
+      # an opaque silence; fall back to stderr if no controlling tty exists.
+      local _msg="  ${_C_BLUE}${_SYM_INFO}${_C_RESET} Waiting for another apt/dpkg process to finish (likely unattended-upgrades on first boot)…"
+      if [[ -w /dev/tty ]]; then
+        printf '%b\n' "$_msg" > /dev/tty
+      else
+        printf '%b\n' "$_msg" >&2
+      fi
+      announced=1
+    fi
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+  done
+}
+
+# Wrapper around apt-get used by every module. Two reasons to never call
+# apt-get directly:
+#   1. Avoid -qq. On Ubuntu Server 24.04+, `apt-get -qq` (quiet=2) disables
+#      PTY allocation for dpkg, which makes apt-listchanges (default
+#      frontend=pager) and some postinst scripts block silently waiting on a
+#      TTY they cannot see — exactly the "stuck install" symptom.
+#   2. Wait for any concurrent dpkg holder (apt-daily-upgrade.service on
+#      first boot) instead of failing or hanging inside apt.
+# Also pins conffile prompts to "keep old" so a future config-modifying upgrade
+# doesn't surprise us with a debconf dialog.
+apt_get() {
+  wait_apt_lock || return $?
+  apt-get \
+    -o Dpkg::Options::=--force-confdef \
+    -o Dpkg::Options::=--force-confold \
+    "$@"
+}
+
 # ---------- Logging ----------
 
 log_step()  { echo -e "${_C_CYAN}${_C_BOLD}${_SYM_ARROW}${_C_RESET} ${_C_BOLD}$1${_C_RESET}"; }
@@ -253,7 +314,7 @@ is_installed() {
 # on a Type=notify postinst service (e.g. fail2ban) before we've written its
 # config and are ready to start it ourselves.
 #
-# Usage: apt_no_service_start apt-get install -y -qq fail2ban
+# Usage: apt_no_service_start apt_get install -y -q fail2ban
 apt_no_service_start() {
   local policy=/usr/sbin/policy-rc.d existed=0 rc=0
   if [[ -e "$policy" ]]; then

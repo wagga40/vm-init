@@ -15,12 +15,11 @@ install_apt() {
   fi
 
   log_step "Updating apt index"
-  export DEBIAN_FRONTEND=noninteractive
-  run_quiet apt-get update -qq
+  run_quiet apt_get update -q
   log_ok "apt index updated"
 
   log_step "Installing APT packages"
   # shellcheck disable=SC2086
-  run_quiet apt-get install -y -qq $packages
+  run_quiet apt_get install -y -q $packages
   log_ok "APT packages installed"
 }

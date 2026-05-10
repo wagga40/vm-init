@@ -86,7 +86,7 @@ ensure_systemd_resolved() {
   if ! systemctl list-unit-files systemd-resolved.service >/dev/null 2>&1 \
       || ! systemctl cat systemd-resolved.service >/dev/null 2>&1; then
     log_step "Installing systemd-resolved"
-    if ! run_quiet apt-get install -y -qq systemd-resolved; then
+    if ! run_quiet apt_get install -y -q systemd-resolved; then
       log_fail "Failed to install systemd-resolved package"
       return 1
     fi

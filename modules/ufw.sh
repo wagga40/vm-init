@@ -7,8 +7,8 @@ install_ufw() {
 
   if ! is_installed ufw; then
     log_step "Installing ufw"
-    run_quiet apt-get update -qq
-    run_quiet apt-get install -y -qq ufw
+    run_quiet apt_get update -q
+    run_quiet apt_get install -y -q ufw
     log_ok "ufw installed"
   fi
 

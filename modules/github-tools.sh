@@ -23,8 +23,8 @@ install_gh() {
 https://cli.github.com/packages stable main" \
     | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
 
-  run_quiet apt-get update -qq
-  run_quiet apt-get install -y -qq gh
+  run_quiet apt_get update -q
+  run_quiet apt_get install -y -q gh
   log_ok "gh installed"
 }
 

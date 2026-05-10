@@ -26,8 +26,8 @@ install_docker() {
 https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
     | tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-  run_quiet apt-get update -qq
-  run_quiet apt-get install -y -qq docker-ce docker-ce-cli containerd.io \
+  run_quiet apt_get update -q
+  run_quiet apt_get install -y -q docker-ce docker-ce-cli containerd.io \
     docker-buildx-plugin docker-compose-plugin
 
   local first_user
