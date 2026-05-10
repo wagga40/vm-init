@@ -628,9 +628,18 @@ version_lt() {
 # first line, extracts the first SemVer-ish token. Used as a fallback when
 # the state file doesn't have a record yet (e.g. first run after upgrading
 # vm-init itself onto a host that already has these binaries).
+#
+# Wrapped in a hard timeout because some TUI-style tools (systemd-manager-tui)
+# ignore --version and launch their interactive UI instead — left unbounded,
+# the script would hang.
 binary_version() {
-  local bin="$1" out ver
-  out=$("$bin" --version 2>/dev/null | head -1) || return 1
+  local bin="$1" out ver timeout_bin
+  timeout_bin=$(_timeout_bin || true)
+  if [[ -n "$timeout_bin" ]]; then
+    out=$("$timeout_bin" --preserve-status 2 "$bin" --version </dev/null 2>/dev/null | head -1) || return 1
+  else
+    out=$("$bin" --version </dev/null 2>/dev/null | head -1) || return 1
+  fi
   ver=$(echo "$out" | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -1)
   [[ -n "$ver" ]] || return 1
   echo "${ver#v}"
@@ -770,13 +779,18 @@ github_release_decide() {
     fi
   fi
 
-  if ! should_upgrade; then
-    echo "current ${installed:-unknown}"
+  # Binary is installed but neither the state file nor --version yields a
+  # version (e.g. systemd-manager-tui's --version launches the TUI rather
+  # than printing). Adopt the latest tag into state so future runs can
+  # compare against it; the alternative is re-downloading on every run.
+  if [[ -z "$installed" ]]; then
+    state_set "github_release.${key}" "$latest"
+    echo "current ${latest}"
     return 0
   fi
 
-  if [[ -z "$installed" ]]; then
-    echo "install"
+  if ! should_upgrade; then
+    echo "current ${installed}"
     return 0
   fi
 
