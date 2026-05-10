@@ -135,6 +135,7 @@ install_shell() {
       # shellcheck disable=SC2016  # $(zoxide init bash) must expand at shell-init time
       echo 'eval "$(zoxide init bash)"' > /etc/profile.d/zoxide.sh
       chmod 0644 /etc/profile.d/zoxide.sh
+      # shellcheck disable=SC2016  # $(zoxide init bash) must expand at shell-init time
       local zoxide_bash_line='eval "$(zoxide init bash)"'
       if [[ -f /etc/bash.bashrc ]]; then
         grep -qxF "$zoxide_bash_line" /etc/bash.bashrc \
