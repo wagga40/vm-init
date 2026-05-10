@@ -54,9 +54,10 @@ teardown() {
   grep -q '^export VM_INIT_BUNDLED_VERSION=' "$BUNDLE"
 }
 
-@test "build-single: bundle embeds all 9 install_ entry functions" {
-  for fn in install_apt install_ufw install_fail2ban install_dns install_docker \
-            install_python install_github_tools install_github_releases install_shell; do
+@test "build-single: bundle embeds all 10 install_ entry functions" {
+  for fn in install_apt install_ufw install_fail2ban install_kernel install_dns \
+            install_docker install_python install_github_tools \
+            install_github_releases install_shell; do
     grep -q "^${fn}() {" "$BUNDLE" \
       || { echo "missing entry: $fn"; return 1; }
   done
@@ -92,11 +93,13 @@ teardown() {
   [[ "$output" == *"Modules:"* ]]
 }
 
-@test "bundle: --update prints bundled-mode guidance and download link" {
+@test "bundle: --update enters the bundled-mode in-place upgrade flow" {
   run "$BUNDLE" --update
   [ "$status" -eq 0 ]
-  [[ "$output" == *"single-file mode"* ]]
-  [[ "$output" == *"https://github.com/wagga40/vm-init/releases/latest/download/vm-init"* ]]
+  [[ "$output" == *"Updating vm-init bundle at"* ]]
+  # When the bundle's version matches the latest release the script reports
+  # "Already at the latest version"; when it doesn't, it proceeds to download.
+  # Either way it exits 0 and identifies the bundled-mode update path.
 }
 
 @test "bundle: --version prints the baked-in version" {
@@ -114,7 +117,7 @@ teardown() {
   cd "$TEST_TMPDIR"
   run "$BUNDLE" --list-modules
   [ "$status" -eq 0 ]
-  for mod in apt ufw fail2ban dns docker python github_tools github_releases shell; do
+  for mod in apt ufw fail2ban kernel dns docker python github_tools github_releases shell; do
     [[ "$output" == *"$mod"* ]] || { echo "missing: $mod"; echo "$output"; return 1; }
   done
 }
@@ -129,7 +132,7 @@ teardown() {
   [[ "$output" == *"DRY RUN"* ]]
   [[ "$output" == *"Dry run complete"* ]]
   [[ "$output" == *"ok: 2"* ]]
-  [[ "$output" == *"skipped: 7"* ]]
+  [[ "$output" == *"skipped: 8"* ]]
 }
 
 @test "bundle: explicit --config overrides embedded default" {
@@ -143,6 +146,7 @@ teardown() {
 apt: {enabled: false}
 ufw: {enabled: false}
 fail2ban: {enabled: false}
+kernel: {enabled: false}
 dns: {enabled: true, server: "https://base.dns.mullvad.net/dns-query", listen_port: 5353}
 docker: {enabled: false}
 python: {enabled: false}
@@ -154,7 +158,7 @@ YAML
   run "$BUNDLE" --dry-run --config "$user_cfg"
   [ "$status" -eq 0 ]
   [[ "$output" == *"ok: 1"* ]]
-  [[ "$output" == *"skipped: 8"* ]]
+  [[ "$output" == *"skipped: 9"* ]]
 }
 
 @test "bundle: ./vm-init.yml overrides embedded default when --config is omitted" {
@@ -172,6 +176,7 @@ YAML
 apt: {enabled: false}
 ufw: {enabled: false}
 fail2ban: {enabled: false}
+kernel: {enabled: false}
 dns: {enabled: true, server: "https://base.dns.mullvad.net/dns-query", listen_port: 5353}
 docker: {enabled: false}
 python: {enabled: false}
@@ -184,7 +189,7 @@ YAML
   run "$BUNDLE" --dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"ok: 1"* ]]
-  [[ "$output" == *"skipped: 8"* ]]
+  [[ "$output" == *"skipped: 9"* ]]
 }
 
 @test "bundle: explicit --config with missing file errors (no silent fallback)" {
@@ -247,7 +252,7 @@ YAML
   run "$BUNDLE" --dry-run --config "${workdir}/vm-init.yml"
   [ "$status" -eq 0 ]
   [[ "$output" == *"ok: 2"* ]]
-  [[ "$output" == *"skipped: 7"* ]]
+  [[ "$output" == *"skipped: 8"* ]]
 }
 
 @test "bundle: --only unknown errors with clear message" {
@@ -273,5 +278,5 @@ YAML
   run ./vm-init --dry-run
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
   [[ "$output" == *"ok: 2"* ]]
-  [[ "$output" == *"skipped: 7"* ]]
+  [[ "$output" == *"skipped: 8"* ]]
 }

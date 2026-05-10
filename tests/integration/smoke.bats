@@ -39,17 +39,26 @@ teardown() {
   [[ "$output" == *"Examples:"* ]]
 }
 
-@test "--update in local checkout mode prints guidance and download link" {
+@test "--update in local checkout mode invokes the local git update flow" {
   run "$VM_INIT_SH" --update
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"local checkout mode"* ]]
-  [[ "$output" == *"https://github.com/wagga40/vm-init/releases/latest/download/vm-init"* ]]
+  # Either the fast-forward path runs ("Updating local checkout at …") or the
+  # script reports a well-formed environment error (no git repo / safe.directory
+  # in CI containers, dirty tree, no upstream, detached HEAD). Both are valid
+  # local-checkout-mode behavior; we just verify the dispatch was correct.
+  [[ "$output" == *"Updating local checkout at"* ]] \
+    || [[ "$output" == *"Not a git repository"* ]] \
+    || [[ "$output" == *"uncommitted changes"* ]] \
+    || [[ "$output" == *"upstream"* ]] \
+    || [[ "$output" == *"Detached HEAD"* ]]
 }
 
 @test "-u is an alias for --update" {
   run "$VM_INIT_SH" -u
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"local checkout mode"* ]]
+  [[ "$output" == *"Updating local checkout at"* ]] \
+    || [[ "$output" == *"Not a git repository"* ]] \
+    || [[ "$output" == *"uncommitted changes"* ]] \
+    || [[ "$output" == *"upstream"* ]] \
+    || [[ "$output" == *"Detached HEAD"* ]]
 }
 
 @test "--update in installed mode passes a v-prefixed tag to installer" {
@@ -168,10 +177,10 @@ SH
 
 # ---------- --list-modules ----------
 
-@test "--list-modules prints all 9 modules" {
+@test "--list-modules prints all 10 modules" {
   run "$VM_INIT_SH" --list-modules --config "$CONFIG"
   [ "$status" -eq 0 ]
-  for mod in apt ufw fail2ban dns docker python github_tools github_releases shell; do
+  for mod in apt ufw fail2ban kernel dns docker python github_tools github_releases shell; do
     [[ "$output" == *"$mod"* ]] || { echo "missing: $mod"; echo "$output"; return 1; }
   done
 }
@@ -195,7 +204,7 @@ SH
   run "$VM_INIT_SH" --list-modules --config "$VM_INIT_DEFAULT_CONFIG"
   [ "$status" -eq 0 ]
   [[ "$output" == *"on: 2"* ]]
-  [[ "$output" == *"off: 7"* ]]
+  [[ "$output" == *"off: 8"* ]]
 }
 
 # ---------- --dry-run ----------
@@ -241,6 +250,7 @@ SH
 apt: {enabled: false}
 ufw: {enabled: false}
 fail2ban: {enabled: false}
+kernel: {enabled: false}
 dns: {enabled: true, server: "https://base.dns.mullvad.net/dns-query", listen_port: 5353}
 docker: {enabled: false}
 python: {enabled: false}
@@ -253,7 +263,7 @@ YAML
   run "$VM_INIT_SH" --dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"ok: 1"* ]]
-  [[ "$output" == *"skipped: 8"* ]]
+  [[ "$output" == *"skipped: 9"* ]]
 }
 
 @test "--dry-run does not write to /var/log" {
@@ -269,7 +279,7 @@ YAML
   run "$VM_INIT_SH" --dry-run --only dns --config "$CONFIG"
   [ "$status" -eq 0 ]
   [[ "$output" == *"ok: 1"* ]]
-  [[ "$output" == *"skipped: 8"* ]]
+  [[ "$output" == *"skipped: 9"* ]]
 }
 
 @test "--skip excludes modules" {
@@ -289,7 +299,7 @@ YAML
   run "$VM_INIT_SH" --dry-run --only apt,dns --config "$CONFIG"
   [ "$status" -eq 0 ]
   [[ "$output" == *"ok: 2"* ]]
-  [[ "$output" == *"skipped: 7"* ]]
+  [[ "$output" == *"skipped: 8"* ]]
 }
 
 # ---------- config validation ----------
