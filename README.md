@@ -4,21 +4,22 @@
 ![Ubuntu 22.04 Tested](https://img.shields.io/badge/ubuntu-22.04_tested-E95420?logo=ubuntu&logoColor=white)
 ![Ubuntu 24.04 Tested](https://img.shields.io/badge/ubuntu-24.04_tested-E95420?logo=ubuntu&logoColor=white)
 
-A config-driven tool for provisioning Ubuntu machines. It starts with a small, low-risk default (core packages plus a plain Fish shell) and lets you opt into heavier networking, security, Docker, Python, and GitHub tooling in `vm-init.yml`.
+A very opinionated config-driven tool for provisioning Ubuntu machines. It starts with a small, low-risk default (core packages plus a plain Fish shell) and lets you opt into heavier networking, security, Docker, Python, and GitHub tooling in `vm-init.yml`.
 
 ## What it installs
 
 | Module | Default | What |
 |--------|---------|------|
-| **apt** | on | Fish shell, editors, build tools, Python base packages, and core CLI utilities |
-| **shell** | on | Fish as default shell, without Fisher/Tide unless opted in |
+| **apt** | on | Fish shell, `lsd`, editors, build tools, Python base packages, and core CLI utilities (`jq`, `fzf`, `ripgrep`, `fd-find`) |
+| **shell** | on | Fish as default shell with `zoxide` and a small set of `lsd`/`bat` aliases; Fisher/Tide opt-in |
 | **ufw** | off | Firewall — deny incoming, allow outgoing, permit listed services |
 | **fail2ban** | off | Brute-force defense — bans offending IPs (SSH jail available, UFW-aware) |
+| **kernel** | off | Kernel boot parameters via `/etc/default/grub` (e.g. `mitigations=off`); reboot required |
 | **dns** | off | DNS privacy via dnsproxy (DoH/DoT) with systemd-resolved |
 | **docker** | off | Docker engine + compose plugin |
 | **python** | off | uv and pre-commit via pipx by default when enabled |
 | **github-tools** | off | GitHub CLI (`gh`), optionally act (local GitHub Actions) |
-| **github-releases** | off | lazydocker, xplr, task, bandwhich, vortix, somo, systemd-manager-tui |
+| **github-releases** | off | lazydocker, xplr, task, zoxide, bandwhich, vortix, somo, systemd-manager-tui, bat |
 
 Each module can be toggled on/off or customized in `vm-init.yml`. Advanced modules are intentionally opt-in so a first run stays simple and predictable.
 
