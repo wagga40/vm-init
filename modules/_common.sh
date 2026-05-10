@@ -624,26 +624,12 @@ version_lt() {
   dpkg --compare-versions "$1" lt "$2"
 }
 
-# Best-effort installed-version probe: runs `<bin> --version`, takes the
-# first line, extracts the first SemVer-ish token. Used as a fallback when
-# the state file doesn't have a record yet (e.g. first run after upgrading
-# vm-init itself onto a host that already has these binaries).
-#
-# Wrapped in a hard timeout because some TUI-style tools (systemd-manager-tui)
-# ignore --version and launch their interactive UI instead — left unbounded,
-# the script would hang.
-binary_version() {
-  local bin="$1" out ver timeout_bin
-  timeout_bin=$(_timeout_bin || true)
-  if [[ -n "$timeout_bin" ]]; then
-    out=$("$timeout_bin" --preserve-status 2 "$bin" --version </dev/null 2>/dev/null | head -1) || return 1
-  else
-    out=$("$bin" --version </dev/null 2>/dev/null | head -1) || return 1
-  fi
-  ver=$(echo "$out" | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-  [[ -n "$ver" ]] || return 1
-  echo "${ver#v}"
-}
+# NOTE: a generic `<bin> --version` probe is unsafe for vm-init's tool set:
+# TUI binaries (systemd-manager-tui) ignore --version and launch the UI,
+# which can swallow SIGTERM, write to /dev/tty bypassing redirected pipes,
+# and leave the orchestrator hung. Rather than add per-binary heuristics,
+# github_release_decide treats "binary installed but no state" as a
+# migration case and adopts the latest tag into state without probing.
 
 # ---------- apt install/upgrade with reporting ----------
 #
@@ -760,7 +746,7 @@ apt_install_group_with_report() {
 #   upgrade <old_tag>    → installed version older than latest
 #   current <tag>        → installed version equals latest, or --no-upgrade
 github_release_decide() {
-  local key="$1" binary="$2" latest="$3" installed probed
+  local key="$1" binary="$2" latest="$3" installed
 
   if should_force; then
     echo "install"
@@ -773,16 +759,11 @@ github_release_decide() {
   fi
 
   installed=$(state_get "github_release.${key}" 2>/dev/null || true)
-  if [[ -z "$installed" ]]; then
-    if probed=$(binary_version "$binary" 2>/dev/null); then
-      installed="v${probed}"
-    fi
-  fi
 
-  # Binary is installed but neither the state file nor --version yields a
-  # version (e.g. systemd-manager-tui's --version launches the TUI rather
-  # than printing). Adopt the latest tag into state so future runs can
-  # compare against it; the alternative is re-downloading on every run.
+  # Binary is installed but state has no record (first run after upgrading
+  # to a vm-init that tracks tags, or state file was removed). Adopt the
+  # latest tag and treat as current — re-downloading every run is wasteful,
+  # and probing arbitrary binaries with --version is unsafe (TUI tools).
   if [[ -z "$installed" ]]; then
     state_set "github_release.${key}" "$latest"
     echo "current ${latest}"
