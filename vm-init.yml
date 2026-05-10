@@ -82,17 +82,25 @@ github_releases:
       asset_pattern: "task_linux_{arch}.tar.gz"
       binary: task
       arch_map: { amd64: amd64, arm64: arm64 }
+    - repo: ajeetdsouza/zoxide
+      asset_pattern: "zoxide-{version}-{arch}.tar.gz"
+      binary: zoxide
+      arch_map: { amd64: x86_64-unknown-linux-musl, arm64: aarch64-unknown-linux-musl }
   custom:
     bandwhich: true
     vortix: true
     somo: true
     systemd_manager_tui: true
+    bat: true
 
 shell:
   enabled: true
   default_shell: fish
   fisher: false
   tide: false
+  zoxide: true
   aliases:
     ll: lsd -ahlF --header --group-dirs first
+    cat: bat
+    catp: bat -pp
   direnv: false

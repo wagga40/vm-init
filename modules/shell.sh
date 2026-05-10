@@ -123,6 +123,29 @@ install_shell() {
     done <<< "$alias_keys"
   fi
 
+  # Zoxide: hook `zoxide init` into fish and bash. The init script defines
+  # `z`/`zi`, so wiring it is what gives the user the `z` alias.
+  local zoxide_enabled
+  zoxide_enabled=$(yq_get '.shell.zoxide' true "$CONFIG")
+  if [[ "$zoxide_enabled" == "true" ]]; then
+    if is_installed zoxide; then
+      log_step "Configuring zoxide (fish + bash)"
+      mkdir -p /etc/fish/conf.d
+      echo 'zoxide init fish | source' > /etc/fish/conf.d/zoxide.fish
+      # shellcheck disable=SC2016  # $(zoxide init bash) must expand at shell-init time
+      echo 'eval "$(zoxide init bash)"' > /etc/profile.d/zoxide.sh
+      chmod 0644 /etc/profile.d/zoxide.sh
+      local zoxide_bash_line='eval "$(zoxide init bash)"'
+      if [[ -f /etc/bash.bashrc ]]; then
+        grep -qxF "$zoxide_bash_line" /etc/bash.bashrc \
+          || echo "$zoxide_bash_line" >> /etc/bash.bashrc
+      fi
+      log_ok "zoxide configured"
+    else
+      log_skip "zoxide (not installed; enable github_releases.generic zoxide)"
+    fi
+  fi
+
   # Direnv
   local direnv_enabled
   direnv_enabled=$(yq_get '.shell.direnv' true "$CONFIG")

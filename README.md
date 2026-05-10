@@ -54,8 +54,7 @@ The bundle runs with the embedded default when no `/etc/vm-init/vm-init.yml`, no
 Fetches the release tarball, verifies its sha256, extracts to `/opt/vm-init`, and symlinks `vm-init` (and `vm-init-recover-dns`) under `/usr/local/sbin`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/wagga40/vm-init/main/scripts/install.sh \
-  | sudo bash
+curl -fsSL https://raw.githubusercontent.com/wagga40/vm-init/main/scripts/install.sh | sudo bash
 ```
 
 See `scripts/install.sh --help` for all options (including `--version` to pin a specific release).

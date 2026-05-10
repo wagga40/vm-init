@@ -170,6 +170,45 @@ install_systemd_manager_tui() {
   log_ok "systemd-manager-tui installed"
 }
 
+install_bat() {
+  if is_installed bat && ! should_force; then
+    log_skip "bat already installed"
+    return 0
+  fi
+
+  local sys_arch target
+  sys_arch=$(dpkg --print-architecture)
+  case "$sys_arch" in
+    amd64) target="x86_64-unknown-linux-gnu" ;;
+    arm64) target="aarch64-unknown-linux-gnu" ;;
+    *) log_skip "bat: no prebuilt binary for ${sys_arch}"; return 0 ;;
+  esac
+
+  log_step "Installing bat"
+  local tag version tmp asset asset_url
+  tag=$(github_latest_version "sharkdp/bat") || return 1
+  version="${tag#v}"
+  asset="bat-v${version}-${target}.tar.gz"
+  asset_url="https://github.com/sharkdp/bat/releases/download/${tag}/${asset}"
+
+  tmp=$(mktemp -d)
+  # shellcheck disable=SC2064
+  trap "rm -rf -- '${tmp}'" RETURN
+
+  if ! download_file "$asset_url" "$tmp/${asset}"; then
+    log_fail "Failed to download bat from ${asset_url}"
+    return 1
+  fi
+  try_verify_github_asset "$tmp/${asset}" "${asset_url}.sha256" || return 1
+  if ! run_quiet tar xzf "$tmp/${asset}" -C /usr/local/bin --strip-components=1 \
+        "bat-v${version}-${target}/bat"; then
+    log_fail "Failed to extract bat"
+    return 1
+  fi
+  chmod +x /usr/local/bin/bat
+  log_ok "bat installed"
+}
+
 # --- Entry point ---
 
 install_github_releases() {
@@ -177,7 +216,7 @@ install_github_releases() {
 
   install_github_releases_generic
 
-  local custom_tools=("bandwhich" "vortix" "somo" "systemd_manager_tui")
+  local custom_tools=("bandwhich" "vortix" "somo" "systemd_manager_tui" "bat")
   for tool in "${custom_tools[@]}"; do
     local enabled
     enabled=$(yq ".github_releases.custom.${tool} // false" "$CONFIG")
