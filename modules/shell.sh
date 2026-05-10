@@ -75,20 +75,39 @@ install_shell() {
   local fisher_enabled
   fisher_enabled=$(yq_get '.shell.fisher' true "$CONFIG")
   if [[ "$fisher_enabled" == "true" ]]; then
-    if should_force || ! fish -c 'fisher --version' >/dev/null 2>&1; then
+    local fisher_present=0
+    fish -c 'fisher --version' >/dev/null 2>&1 && fisher_present=1
+
+    if should_force || ! (( fisher_present )); then
       log_step "Installing Fisher + Tide (root)"
       install_fisher_tide "root" "/root"
-      log_ok "Fisher + Tide (root)"
+      log_installed "fisher+tide (root)"
 
       while IFS=: read -r u home_dir; do
         log_step "Installing Fisher + Tide (${u})"
         chown -R "$u:$u" "${home_dir}/.config" 2>/dev/null || true
         install_fisher_tide "$u" "$home_dir"
         chown -R "$u:$u" "${home_dir}/.config" 2>/dev/null || true
-        log_ok "Fisher + Tide (${u})"
+        log_installed "fisher+tide (${u})"
+      done < <(human_users)
+    elif should_upgrade; then
+      log_step "Updating Fisher plugins (root)"
+      if run_quiet fish -c 'fisher update'; then
+        log_upgraded "fisher plugins (root)"
+      else
+        log_warn "fisher update (root) returned non-zero"
+      fi
+
+      while IFS=: read -r u _home; do
+        log_step "Updating Fisher plugins (${u})"
+        if run_quiet sudo -u "$u" fish -c 'fisher update'; then
+          log_upgraded "fisher plugins (${u})"
+        else
+          log_warn "fisher update (${u}) returned non-zero"
+        fi
       done < <(human_users)
     else
-      log_skip "Fisher already installed"
+      log_current "fisher"
     fi
   fi
 
@@ -151,14 +170,9 @@ install_shell() {
   local direnv_enabled
   direnv_enabled=$(yq_get '.shell.direnv' true "$CONFIG")
   if [[ "$direnv_enabled" == "true" ]]; then
-    if ! is_installed direnv; then
-      log_step "Installing direnv"
-      if ! run_quiet apt_get install -y -q direnv; then
-        log_fail "Failed to install direnv"
-        return 1
-      fi
-      log_ok "direnv installed"
-    fi
+    log_step "direnv"
+    apt_install_with_report direnv || return 1
+
     log_step "Configuring direnv and PATH"
     echo 'direnv hook fish | source' > /etc/fish/conf.d/direnv.fish
     echo 'fish_add_path -g /usr/local/bin' > /etc/fish/conf.d/pipx-path.fish

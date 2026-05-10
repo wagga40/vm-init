@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # GitHub release binary installer module.
 # Reads: CONFIG (path to vm-init.yml)
-# Uses: download_github_release from _common.sh
+# Uses: download_github_release, github_release_decide from _common.sh
 
 # --- Generic installer (config-driven) ---
 
@@ -25,20 +25,32 @@ install_github_releases_generic() {
 }
 
 # --- Custom installers (bespoke logic per tool) ---
+#
+# Each handler follows the same shape:
+#   1. Fetch latest tag.
+#   2. Ask github_release_decide what to do.
+#   3. If "current": log_current and return.
+#   4. Otherwise: download/install, persist tag in state file, log accordingly.
 
 install_bandwhich() {
-  if is_installed bandwhich && ! should_force; then
-    log_skip "bandwhich already installed"
+  log_step "bandwhich"
+
+  local tag
+  tag=$(github_latest_version "imsnif/bandwhich") || return 1
+
+  local decision action old
+  decision=$(github_release_decide "bandwhich" "bandwhich" "$tag")
+  action="${decision%% *}"
+  old="${decision#"${action}"}"; old="${old# }"
+
+  if [[ "$action" == "current" ]]; then
+    log_current "bandwhich" "$old"
     return 0
   fi
 
-  log_step "Installing bandwhich"
-  local sys_arch target
+  local sys_arch target asset_url tmp
   sys_arch=$(dpkg --print-architecture)
   [[ "$sys_arch" == amd64 ]] && target="x86_64-unknown-linux-musl" || target="aarch64-unknown-linux-musl"
-
-  local tag tmp asset_url
-  tag=$(github_latest_version "imsnif/bandwhich") || return 1
   asset_url="https://github.com/imsnif/bandwhich/releases/download/${tag}/bandwhich-${tag}-${target}.tar.gz"
 
   tmp=$(mktemp -d)
@@ -55,18 +67,33 @@ install_bandwhich() {
     return 1
   fi
   chmod +x /usr/local/bin/bandwhich
-  log_ok "bandwhich installed"
+
+  state_set "github_release.bandwhich" "$tag"
+
+  if [[ "$action" == "upgrade" ]]; then
+    log_upgraded "bandwhich" "$old" "$tag"
+  else
+    log_installed "bandwhich" "$tag"
+  fi
 }
 
 install_vortix() {
-  if is_installed vortix && ! should_force; then
-    log_skip "vortix already installed"
+  log_step "vortix"
+
+  local tag
+  tag=$(github_latest_version "Harry-kp/vortix") || return 1
+
+  local decision action old
+  decision=$(github_release_decide "vortix" "vortix" "$tag")
+  action="${decision%% *}"
+  old="${decision#"${action}"}"; old="${old# }"
+
+  if [[ "$action" == "current" ]]; then
+    log_current "vortix" "$old"
     return 0
   fi
 
-  log_step "Installing vortix"
-  local tag installer_url installer
-  tag=$(github_latest_version "Harry-kp/vortix") || return 1
+  local installer_url installer
   installer_url="https://github.com/Harry-kp/vortix/releases/download/${tag}/vortix-installer.sh"
   installer=$(mktemp)
   # shellcheck disable=SC2064
@@ -82,15 +109,17 @@ install_vortix() {
     log_fail "vortix installer exited non-zero"
     return 1
   fi
-  log_ok "vortix installed"
+
+  state_set "github_release.vortix" "$tag"
+
+  if [[ "$action" == "upgrade" ]]; then
+    log_upgraded "vortix" "$old" "$tag"
+  else
+    log_installed "vortix" "$tag"
+  fi
 }
 
 install_somo() {
-  if is_installed somo && ! should_force; then
-    log_skip "somo already installed"
-    return 0
-  fi
-
   local sys_arch
   sys_arch=$(dpkg --print-architecture)
   if [[ "$sys_arch" != "amd64" ]]; then
@@ -98,9 +127,9 @@ install_somo() {
     return 0
   fi
 
-  log_step "Installing somo"
+  log_step "somo"
 
-  local auth_args=() release_json deb_url deb_tmp
+  local auth_args=() release_json deb_url tag
   mapfile -t auth_args < <(_github_auth_args)
   if ! release_json=$(curl_retry "${auth_args[@]}" \
         -H "Accept: application/vnd.github+json" \
@@ -108,6 +137,7 @@ install_somo() {
     log_fail "Failed to fetch somo release metadata"
     return 1
   fi
+  tag=$(echo "$release_json" | jq -r '.tag_name')
   deb_url=$(echo "$release_json" \
     | jq -r '.assets[] | select(.name | endswith(".deb")) | .browser_download_url' \
     | head -1)
@@ -117,6 +147,17 @@ install_somo() {
     return 0
   fi
 
+  local decision action old
+  decision=$(github_release_decide "somo" "somo" "$tag")
+  action="${decision%% *}"
+  old="${decision#"${action}"}"; old="${old# }"
+
+  if [[ "$action" == "current" ]]; then
+    log_current "somo" "$old"
+    return 0
+  fi
+
+  local deb_tmp
   deb_tmp=$(mktemp --suffix=.deb)
   # shellcheck disable=SC2064
   trap "rm -f -- '${deb_tmp}'" RETURN
@@ -130,17 +171,17 @@ install_somo() {
     log_fail "dpkg -i failed for somo"
     return 1
   fi
-  log_ok "somo installed"
+
+  state_set "github_release.somo" "$tag"
+
+  if [[ "$action" == "upgrade" ]]; then
+    log_upgraded "somo" "$old" "$tag"
+  else
+    log_installed "somo" "$tag"
+  fi
 }
 
 install_systemd_manager_tui() {
-  if is_installed systemd-manager-tui && ! should_force; then
-    log_skip "systemd-manager-tui already installed"
-    return 0
-  fi
-
-  log_step "Installing systemd-manager-tui"
-
   local sys_arch
   sys_arch=$(dpkg --print-architecture)
   case "$sys_arch" in
@@ -149,8 +190,22 @@ install_systemd_manager_tui() {
        return 0 ;;
   esac
 
-  local tag version deb_url deb_tmp
+  log_step "systemd-manager-tui"
+
+  local tag
   tag=$(github_latest_version "Matheus-git/systemd-manager-tui") || return 1
+
+  local decision action old
+  decision=$(github_release_decide "systemd-manager-tui" "systemd-manager-tui" "$tag")
+  action="${decision%% *}"
+  old="${decision#"${action}"}"; old="${old# }"
+
+  if [[ "$action" == "current" ]]; then
+    log_current "systemd-manager-tui" "$old"
+    return 0
+  fi
+
+  local version deb_url deb_tmp
   version="${tag#v}"
   deb_url="https://github.com/Matheus-git/systemd-manager-tui/releases/download/${tag}/systemd-manager-tui_${version}_${sys_arch}.deb"
 
@@ -167,15 +222,17 @@ install_systemd_manager_tui() {
     log_fail "dpkg -i failed for systemd-manager-tui"
     return 1
   fi
-  log_ok "systemd-manager-tui installed"
+
+  state_set "github_release.systemd-manager-tui" "$tag"
+
+  if [[ "$action" == "upgrade" ]]; then
+    log_upgraded "systemd-manager-tui" "$old" "$tag"
+  else
+    log_installed "systemd-manager-tui" "$tag"
+  fi
 }
 
 install_bat() {
-  if is_installed bat && ! should_force; then
-    log_skip "bat already installed"
-    return 0
-  fi
-
   local sys_arch target
   sys_arch=$(dpkg --print-architecture)
   case "$sys_arch" in
@@ -184,9 +241,22 @@ install_bat() {
     *) log_skip "bat: no prebuilt binary for ${sys_arch}"; return 0 ;;
   esac
 
-  log_step "Installing bat"
-  local tag version tmp asset asset_url
+  log_step "bat"
+
+  local tag
   tag=$(github_latest_version "sharkdp/bat") || return 1
+
+  local decision action old
+  decision=$(github_release_decide "bat" "bat" "$tag")
+  action="${decision%% *}"
+  old="${decision#"${action}"}"; old="${old# }"
+
+  if [[ "$action" == "current" ]]; then
+    log_current "bat" "$old"
+    return 0
+  fi
+
+  local version asset asset_url tmp
   version="${tag#v}"
   asset="bat-v${version}-${target}.tar.gz"
   asset_url="https://github.com/sharkdp/bat/releases/download/${tag}/${asset}"
@@ -206,7 +276,14 @@ install_bat() {
     return 1
   fi
   chmod +x /usr/local/bin/bat
-  log_ok "bat installed"
+
+  state_set "github_release.bat" "$tag"
+
+  if [[ "$action" == "upgrade" ]]; then
+    log_upgraded "bat" "$old" "$tag"
+  else
+    log_installed "bat" "$tag"
+  fi
 }
 
 # --- Entry point ---

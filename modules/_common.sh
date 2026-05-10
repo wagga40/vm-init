@@ -54,6 +54,8 @@ _vm_init_detect_ui() {
     _SYM_INFO="ℹ"
     _SYM_BULLET="•"
     _SYM_RULE="─"
+    _SYM_UPGRADE="↑"
+    _SYM_CURRENT="○"
   else
     _SYM_ARROW="==>"
     _SYM_OK="[OK]"
@@ -63,6 +65,8 @@ _vm_init_detect_ui() {
     _SYM_INFO="[ii]"
     _SYM_BULLET="-"
     _SYM_RULE="-"
+    _SYM_UPGRADE="[^^]"
+    _SYM_CURRENT="[==]"
   fi
 
   _VM_INIT_USE_COLOR="$use_color"
@@ -160,6 +164,47 @@ log_fail()  { echo -e "  ${_C_RED}${_SYM_FAIL}${_C_RESET} $1" >&2; }
 log_info()  { echo -e "  ${_C_BLUE}${_SYM_INFO}${_C_RESET} $1"; }
 log_done()  { echo -e "${_C_BRIGHT_GREEN}${_C_BOLD}${_SYM_OK}${_C_RESET} ${_C_BOLD}$1${_C_RESET}"; }
 
+# Tool-level outcome logging used by upgrade-aware modules. Each emits a
+# distinct symbol/color and increments a tally (read by the orchestrator's
+# summary block). Version arguments are optional so callers can stay terse
+# when the source has no meaningful version (e.g., a refresh of fisher
+# plugins).
+
+_tally() {
+  [[ -n "${VM_INIT_TALLY_FILE:-}" ]] || return 0
+  printf '%s\n' "$1" >> "${VM_INIT_TALLY_FILE}" 2>/dev/null || true
+}
+
+log_installed() {
+  local tool="$1" ver="${2:-}"
+  if [[ -n "$ver" ]]; then
+    echo -e "  ${_C_BRIGHT_GREEN}${_SYM_OK}${_C_RESET} ${tool} installed ${_C_BOLD}${ver}${_C_RESET}"
+  else
+    echo -e "  ${_C_BRIGHT_GREEN}${_SYM_OK}${_C_RESET} ${tool} installed"
+  fi
+  _tally installed
+}
+
+log_upgraded() {
+  local tool="$1" old="${2:-}" new="${3:-}"
+  if [[ -n "$old" && -n "$new" ]]; then
+    echo -e "  ${_C_BRIGHT_CYAN}${_SYM_UPGRADE}${_C_RESET} ${tool} upgraded ${_C_DIM}${old}${_C_RESET} → ${_C_BOLD}${new}${_C_RESET}"
+  else
+    echo -e "  ${_C_BRIGHT_CYAN}${_SYM_UPGRADE}${_C_RESET} ${tool} upgraded"
+  fi
+  _tally upgraded
+}
+
+log_current() {
+  local tool="$1" ver="${2:-}"
+  if [[ -n "$ver" ]]; then
+    echo -e "  ${_C_GREEN}${_SYM_CURRENT}${_C_RESET} ${tool} ${_C_DIM}up to date (${ver})${_C_RESET}"
+  else
+    echo -e "  ${_C_GREEN}${_SYM_CURRENT}${_C_RESET} ${tool} ${_C_DIM}up to date${_C_RESET}"
+  fi
+  _tally current
+}
+
 # Module section header with an optional progress fragment rendered dim.
 #   log_section "apt"            → ━━━ apt ━━━
 #   log_section "apt" "1/9"      → ━━━ apt  1/9 ━━━
@@ -205,12 +250,15 @@ print_help_section() {
 # --help output and anywhere a reader might wonder what [OK] etc. mean.
 # Pads the symbol to 4 columns so ASCII "==>" and "[OK]" align in both modes.
 print_status_legend() {
-  printf "  ${_C_GREEN}%-4s${_C_RESET} %-6s %s\n"  "${_SYM_OK}"    "ok"    "step completed"
-  printf "  ${_C_DIM}%-4s %-6s %s${_C_RESET}\n"    "${_SYM_SKIP}"  "skip"  "skipped (filter or disabled in config)"
-  printf "  ${_C_YELLOW}%-4s${_C_RESET} %-6s %s\n" "${_SYM_WARN}"  "warn"  "completed with warnings"
-  printf "  ${_C_RED}%-4s${_C_RESET} %-6s %s\n"    "${_SYM_FAIL}"  "fail"  "module failed"
-  printf "  ${_C_BLUE}%-4s${_C_RESET} %-6s %s\n"   "${_SYM_INFO}"  "info"  "informational message"
-  printf "  ${_C_CYAN}%-4s${_C_RESET} %-6s %s\n"   "${_SYM_ARROW}" "step"  "starting a step"
+  printf "  ${_C_BRIGHT_GREEN}%-4s${_C_RESET} %-9s %s\n" "${_SYM_OK}"      "installed" "tool freshly installed"
+  printf "  ${_C_BRIGHT_CYAN}%-4s${_C_RESET} %-9s %s\n"  "${_SYM_UPGRADE}" "upgraded"  "tool upgraded to latest"
+  printf "  ${_C_GREEN}%-4s${_C_RESET} %-9s %s\n"        "${_SYM_CURRENT}" "current"   "tool already at latest"
+  printf "  ${_C_GREEN}%-4s${_C_RESET} %-9s %s\n"        "${_SYM_OK}"      "ok"        "step completed"
+  printf "  ${_C_DIM}%-4s %-9s %s${_C_RESET}\n"          "${_SYM_SKIP}"    "skip"      "skipped (filter, disabled, or --no-upgrade)"
+  printf "  ${_C_YELLOW}%-4s${_C_RESET} %-9s %s\n"       "${_SYM_WARN}"    "warn"      "completed with warnings"
+  printf "  ${_C_RED}%-4s${_C_RESET} %-9s %s\n"          "${_SYM_FAIL}"    "fail"      "module failed"
+  printf "  ${_C_BLUE}%-4s${_C_RESET} %-9s %s\n"         "${_SYM_INFO}"    "info"      "informational message"
+  printf "  ${_C_CYAN}%-4s${_C_RESET} %-9s %s\n"         "${_SYM_ARROW}"   "step"      "starting a step"
 }
 
 # Format a duration given in whole seconds as "Xm Ys" or "Xh Ym Zs".
@@ -348,6 +396,13 @@ require_commands() {
 
 should_force() {
   [[ "${VM_INIT_FORCE:-0}" == "1" ]]
+}
+
+# Upgrade-aware mode is on by default; users opt out with --no-upgrade
+# (env: VM_INIT_NO_UPGRADE=1) for fast no-op reruns that don't hit the
+# network or apt index. --force always wins over --no-upgrade.
+should_upgrade() {
+  [[ "${VM_INIT_NO_UPGRADE:-0}" != "1" ]]
 }
 
 # Read a YAML value, substituting a default only when the key is absent (null).
@@ -532,10 +587,215 @@ github_latest_version() {
   echo "$tag"
 }
 
+# ---------- State file (installed-version cache) ----------
+#
+# Used by GitHub-release modules to remember the tag last installed for each
+# binary, so re-runs can decide install / upgrade / current without invoking
+# every binary's --version. One key=value pair per line; keys are namespaced
+# (e.g. "github_release.bandwhich") to avoid collisions.
+
+: "${VM_INIT_STATE_DIR:=/var/lib/vm-init}"
+: "${VM_INIT_STATE_FILE:=${VM_INIT_STATE_DIR}/state}"
+
+state_get() {
+  local key="$1" value
+  [[ -f "${VM_INIT_STATE_FILE}" ]] || return 1
+  value=$(grep "^${key}=" "${VM_INIT_STATE_FILE}" 2>/dev/null | tail -1 | cut -d= -f2-)
+  [[ -n "$value" ]] || return 1
+  echo "$value"
+}
+
+state_set() {
+  local key="$1" value="$2" tmp
+  mkdir -p "${VM_INIT_STATE_DIR}" 2>/dev/null || return 1
+  tmp=$(mktemp) || return 1
+  if [[ -f "${VM_INIT_STATE_FILE}" ]]; then
+    grep -v "^${key}=" "${VM_INIT_STATE_FILE}" > "$tmp" 2>/dev/null || true
+  fi
+  printf '%s=%s\n' "$key" "$value" >> "$tmp"
+  mv "$tmp" "${VM_INIT_STATE_FILE}"
+  chmod 0644 "${VM_INIT_STATE_FILE}" 2>/dev/null || true
+}
+
+# ---------- Version helpers ----------
+
+# Returns 0 if $1 < $2 by Debian's version comparison rules.
+version_lt() {
+  dpkg --compare-versions "$1" lt "$2"
+}
+
+# Best-effort installed-version probe: runs `<bin> --version`, takes the
+# first line, extracts the first SemVer-ish token. Used as a fallback when
+# the state file doesn't have a record yet (e.g. first run after upgrading
+# vm-init itself onto a host that already has these binaries).
+binary_version() {
+  local bin="$1" out ver
+  out=$("$bin" --version 2>/dev/null | head -1) || return 1
+  ver=$(echo "$out" | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  [[ -n "$ver" ]] || return 1
+  echo "${ver#v}"
+}
+
+# ---------- apt install/upgrade with reporting ----------
+#
+# Most apt-managed tools follow the same pattern: install if missing,
+# upgrade if newer is in the cache (default), or just report current
+# (when --no-upgrade). These two helpers centralize that logic and emit
+# log_installed / log_upgraded / log_current consistently.
+
+# Install or upgrade a single apt package and report.
+# Args: <pkg> [<display name>]
+apt_install_with_report() {
+  local pkg="$1"
+  local name="${2:-$pkg}"
+  local pre post
+  pre=$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)
+
+  if [[ -z "$pre" ]]; then
+    if ! run_quiet apt_get install -y -q "$pkg"; then
+      log_fail "Failed to install ${pkg}"
+      return 1
+    fi
+    post=$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)
+    log_installed "$name" "${post:-?}"
+    return 0
+  fi
+
+  if should_force; then
+    if ! run_quiet apt_get install -y -q --reinstall "$pkg"; then
+      log_fail "Failed to reinstall ${pkg}"
+      return 1
+    fi
+    post=$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)
+    log_installed "$name" "${post:-?}"
+    return 0
+  fi
+
+  if should_upgrade; then
+    if ! run_quiet apt_get install -y -q "$pkg"; then
+      log_fail "Failed to upgrade ${pkg}"
+      return 1
+    fi
+    post=$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)
+    if [[ -n "$post" && "$pre" != "$post" ]]; then
+      log_upgraded "$name" "$pre" "$post"
+    else
+      log_current "$name" "$pre"
+    fi
+    return 0
+  fi
+
+  log_current "$name" "$pre"
+}
+
+# Install or upgrade a group of apt packages, reporting against a primary
+# package's version. Used for meta-installs like docker-ce + plugins.
+# Args: <display_name> <primary_pkg> <pkg1> [<pkg2> ...]
+apt_install_group_with_report() {
+  local name="$1" primary="$2"
+  shift 2
+  local pkgs=("$@") pre post
+  pre=$(dpkg-query -W -f='${Version}' "$primary" 2>/dev/null || true)
+
+  if [[ -z "$pre" ]]; then
+    if ! run_quiet apt_get install -y -q "${pkgs[@]}"; then
+      log_fail "Failed to install ${name}"
+      return 1
+    fi
+    post=$(dpkg-query -W -f='${Version}' "$primary" 2>/dev/null || true)
+    log_installed "$name" "${post:-?}"
+    return 0
+  fi
+
+  if should_force; then
+    if ! run_quiet apt_get install -y -q --reinstall "${pkgs[@]}"; then
+      log_fail "Failed to reinstall ${name}"
+      return 1
+    fi
+    post=$(dpkg-query -W -f='${Version}' "$primary" 2>/dev/null || true)
+    log_installed "$name" "${post:-?}"
+    return 0
+  fi
+
+  if should_upgrade; then
+    if ! run_quiet apt_get install -y -q "${pkgs[@]}"; then
+      log_fail "Failed to upgrade ${name}"
+      return 1
+    fi
+    post=$(dpkg-query -W -f='${Version}' "$primary" 2>/dev/null || true)
+    if [[ -n "$post" && "$pre" != "$post" ]]; then
+      log_upgraded "$name" "$pre" "$post"
+    else
+      log_current "$name" "$pre"
+    fi
+    return 0
+  fi
+
+  log_current "$name" "$pre"
+}
+
 # ---------- GitHub release binary installer ----------
 
+# Decide whether a GitHub-release binary should be installed, upgraded,
+# left alone, or treated as up-to-date (when --no-upgrade is set). The
+# caller passes the latest tag (already fetched from the API) so this
+# helper doesn't re-hit the network.
+#
+# Args: <key> <binary> <latest_tag>
+#   <key>    — namespaced state key (typically the binary name itself)
+#   <binary> — name on PATH; used for is_installed + binary_version fallback
+#   <latest> — latest release tag (e.g., "v0.23.1")
+#
+# Echoes a single token followed by an optional version, separated by space:
+#   install              → fresh install (binary missing)
+#   upgrade <old_tag>    → installed version older than latest
+#   current <tag>        → installed version equals latest, or --no-upgrade
+github_release_decide() {
+  local key="$1" binary="$2" latest="$3" installed probed
+
+  if should_force; then
+    echo "install"
+    return 0
+  fi
+
+  if ! is_installed "$binary"; then
+    echo "install"
+    return 0
+  fi
+
+  installed=$(state_get "github_release.${key}" 2>/dev/null || true)
+  if [[ -z "$installed" ]]; then
+    if probed=$(binary_version "$binary" 2>/dev/null); then
+      installed="v${probed}"
+    fi
+  fi
+
+  if ! should_upgrade; then
+    echo "current ${installed:-unknown}"
+    return 0
+  fi
+
+  if [[ -z "$installed" ]]; then
+    echo "install"
+    return 0
+  fi
+
+  if [[ "$installed" == "$latest" ]]; then
+    echo "current ${installed}"
+    return 0
+  fi
+
+  if version_lt "${installed#v}" "${latest#v}"; then
+    echo "upgrade ${installed}"
+    return 0
+  fi
+
+  echo "current ${installed}"
+}
+
 # Download a binary from a GitHub release tarball, verify its sha256 sidecar
-# when available, and install to /usr/local/bin.
+# when available, install to /usr/local/bin, and report installed/upgraded/
+# current state.
 #
 # Usage: download_github_release <repo> <asset_pattern> <binary> <arch_value>
 #
@@ -546,17 +806,25 @@ github_latest_version() {
 download_github_release() {
   local repo="$1" pattern="$2" binary="$3" arch_value="$4"
 
-  if is_installed "$binary" && ! should_force; then
-    log_skip "${binary} already installed"
-    return 0
-  fi
+  log_step "${binary} from ${repo}"
 
-  log_step "Installing ${binary} from ${repo}"
-
-  local tag version asset url sha_url
+  local tag
   if ! tag=$(github_latest_version "$repo"); then
     return 1
   fi
+
+  local decision action old
+  decision=$(github_release_decide "$binary" "$binary" "$tag")
+  action="${decision%% *}"
+  old="${decision#"${action}"}"
+  old="${old# }"
+
+  if [[ "$action" == "current" ]]; then
+    log_current "$binary" "$old"
+    return 0
+  fi
+
+  local version asset url sha_url
   version="${tag#v}"
 
   asset="$pattern"
@@ -586,5 +854,12 @@ download_github_release() {
     return 1
   fi
   chmod +x "/usr/local/bin/${binary}"
-  log_ok "${binary} installed"
+
+  state_set "github_release.${binary}" "$tag"
+
+  if [[ "$action" == "upgrade" ]]; then
+    log_upgraded "$binary" "$old" "$tag"
+  else
+    log_installed "$binary" "$tag"
+  fi
 }

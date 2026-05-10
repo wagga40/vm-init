@@ -5,38 +5,41 @@
 install_gh() {
   require_commands apt-get dpkg || return 1
 
-  if is_installed gh && ! should_force; then
-    log_skip "gh already installed"
-    return 0
-  fi
+  if ! [[ -f /etc/apt/sources.list.d/github-cli.list ]]; then
+    log_step "Setting up GitHub CLI apt repository"
+    if ! download_file \
+          "https://cli.github.com/packages/githubcli-archive-keyring.gpg" \
+          /usr/share/keyrings/githubcli-archive-keyring.gpg; then
+      log_fail "Failed to download GitHub CLI keyring"
+      return 1
+    fi
+    chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
 
-  log_step "Installing GitHub CLI (gh)"
-  if ! download_file \
-        "https://cli.github.com/packages/githubcli-archive-keyring.gpg" \
-        /usr/share/keyrings/githubcli-archive-keyring.gpg; then
-    log_fail "Failed to download GitHub CLI keyring"
-    return 1
-  fi
-  chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] \
 https://cli.github.com/packages stable main" \
-    | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+      | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
 
-  run_quiet apt_get update -q
-  run_quiet apt_get install -y -q gh
-  log_ok "gh installed"
+    run_quiet apt_get update -q
+  fi
+
+  apt_install_with_report gh
 }
 
 install_act() {
   require_commands bash || return 1
 
-  if is_installed act && ! should_force; then
-    log_skip "act already installed"
-    return 0
+  log_step "act"
+
+  local pre=""
+  if is_installed act; then
+    pre=$(binary_version act 2>/dev/null || true)
+
+    if ! should_force && ! should_upgrade; then
+      log_current "act" "v${pre:-unknown}"
+      return 0
+    fi
   fi
 
-  log_step "Installing act"
   # act ships a remote installer script; download to a tempfile (with retries)
   # so we can log it and not pipe an opaque remote payload straight to bash.
   local act_install
@@ -57,7 +60,17 @@ install_act() {
     log_fail "act installer exited non-zero"
     return 1
   fi
-  log_ok "act installed"
+
+  local post
+  post=$(binary_version act 2>/dev/null || true)
+
+  if [[ -z "$pre" ]]; then
+    log_installed "act" "v${post:-unknown}"
+  elif [[ -n "$post" && "$pre" != "$post" ]]; then
+    log_upgraded "act" "v${pre}" "v${post}"
+  else
+    log_current "act" "v${pre}"
+  fi
 }
 
 install_github_tools() {

@@ -334,6 +334,7 @@ run_update_cmd() {
 VM_INIT_RUN_MODE="$(detect_run_mode)"
 
 export VM_INIT_FORCE=0
+export VM_INIT_NO_UPGRADE=0
 export VM_INIT_VERBOSE=0
 export VM_INIT_NO_LOG=0
 export VM_INIT_DRY_RUN=0
@@ -390,6 +391,7 @@ usage() {
   _usage_opt "--dry-run"          "Preview: show each module's actions, no changes"
   _usage_opt "--update, -u"           "Update vm-init (mode-aware behavior)"
   _usage_opt "--force, -f"            "Reinstall/overwrite all tools"
+  _usage_opt "--no-upgrade"           "Skip update checks for already-installed tools (default is upgrade-aware)"
   _usage_opt "--verbose"          "Show full command output (default: quiet)"
   echo ""
   echo -e "  ${_C_DIM}Logging${_C_RESET}"
@@ -445,6 +447,7 @@ while [[ $# -gt 0 ]]; do
     --list-modules|-l)       VM_INIT_LIST_MODULES=1; shift ;;
     --write-default-config|-w) VM_INIT_WRITE_DEFAULT_CONFIG=1; shift ;;
     --force|-f)              export VM_INIT_FORCE=1; shift ;;
+    --no-upgrade)             export VM_INIT_NO_UPGRADE=1; shift ;;
     --verbose)                export VM_INIT_VERBOSE=1; shift ;;
     --no-log)                 export VM_INIT_NO_LOG=1; shift ;;
     --log-file)               require_option_value "$1" "${2-}"; LOG_FILE="$2"; shift 2 ;;
@@ -530,11 +533,16 @@ fi
 # ---------------------------------------------------------------------------
 
 VM_INIT_EMBEDDED_CONFIG_TMP=""
-_cleanup_embedded_config() {
+VM_INIT_TALLY_FILE=""
+_vm_init_cleanup() {
   if [[ -n "${VM_INIT_EMBEDDED_CONFIG_TMP:-}" && -f "${VM_INIT_EMBEDDED_CONFIG_TMP}" ]]; then
     rm -f "$VM_INIT_EMBEDDED_CONFIG_TMP"
   fi
+  if [[ -n "${VM_INIT_TALLY_FILE:-}" && -f "${VM_INIT_TALLY_FILE}" ]]; then
+    rm -f "$VM_INIT_TALLY_FILE"
+  fi
 }
+trap _vm_init_cleanup EXIT
 
 if [[ "$CONFIG_EXPLICIT" != "1" && ! -f "$CONFIG" ]] \
    && declare -F _emit_default_config >/dev/null 2>&1; then
@@ -543,10 +551,21 @@ if [[ "$CONFIG_EXPLICIT" != "1" && ! -f "$CONFIG" ]] \
      && _emit_default_config > "$VM_INIT_EMBEDDED_CONFIG_TMP" 2>/dev/null \
      && [[ -s "$VM_INIT_EMBEDDED_CONFIG_TMP" ]]; then
     CONFIG="$VM_INIT_EMBEDDED_CONFIG_TMP"
-    trap _cleanup_embedded_config EXIT
   else
     rm -f "${VM_INIT_EMBEDDED_CONFIG_TMP:-}" 2>/dev/null || true
     VM_INIT_EMBEDDED_CONFIG_TMP=""
+  fi
+fi
+
+# Tally file: per-tool outcomes (one of "installed", "upgraded", "current"
+# per line) accumulated by log_installed/log_upgraded/log_current. Modules
+# run inside subshells (run_with_errexit), so an env-passed file path is
+# the simplest way to aggregate counts across them.
+if [[ "$VM_INIT_DRY_RUN" != "1" ]]; then
+  VM_INIT_TALLY_FILE=$(mktemp 2>/dev/null || true)
+  if [[ -n "$VM_INIT_TALLY_FILE" ]]; then
+    : > "$VM_INIT_TALLY_FILE"
+    export VM_INIT_TALLY_FILE
   fi
 fi
 
@@ -700,9 +719,10 @@ print_kv "Config"   "${_C_CYAN}${CONFIG}${_C_RESET}"
 [[ -n "${LOG_FILE:-}"     ]] && print_kv "Log"     "${_C_CYAN}${LOG_FILE}${_C_RESET}"
 [[ -n "$VM_INIT_ONLY"     ]] && print_kv "Only"    "${_C_BOLD}${VM_INIT_ONLY}${_C_RESET}"
 [[ -n "$VM_INIT_SKIP"     ]] && print_kv "Skip"    "${_C_BOLD}${VM_INIT_SKIP}${_C_RESET}"
-[[ "$VM_INIT_FORCE"   == "1" ]] && print_kv "Force"   "${_C_YELLOW}${_C_BOLD}ON${_C_RESET}"
-[[ "$VM_INIT_VERBOSE" == "1" ]] && print_kv "Verbose" "${_C_YELLOW}${_C_BOLD}ON${_C_RESET}"
-[[ "$VM_INIT_DRY_RUN" == "1" ]] && print_kv "Dry-run" "${_C_YELLOW}${_C_BOLD}ON${_C_RESET}"
+[[ "$VM_INIT_FORCE"      == "1" ]] && print_kv "Force"      "${_C_YELLOW}${_C_BOLD}ON${_C_RESET}"
+[[ "$VM_INIT_NO_UPGRADE" == "1" ]] && print_kv "No-upgrade" "${_C_YELLOW}${_C_BOLD}ON${_C_RESET}"
+[[ "$VM_INIT_VERBOSE"    == "1" ]] && print_kv "Verbose"    "${_C_YELLOW}${_C_BOLD}ON${_C_RESET}"
+[[ "$VM_INIT_DRY_RUN"    == "1" ]] && print_kv "Dry-run"    "${_C_YELLOW}${_C_BOLD}ON${_C_RESET}"
 
 # ---------------------------------------------------------------------------
 # yq bootstrap (skipped in dry-run)
@@ -1028,6 +1048,17 @@ print_summary() {
   print_rule 60
   printf "  ${_C_GREEN}ok${_C_RESET}: %d   ${_C_DIM}skipped${_C_RESET}: %d   ${_C_YELLOW}warned${_C_RESET}: %d   ${_C_RED}failed${_C_RESET}: %d   ${_C_DIM}elapsed: %s${_C_RESET}\n" \
     "$ok" "$skip" "$warn" "$fail" "$(format_duration "$elapsed")"
+
+  if [[ -n "${VM_INIT_TALLY_FILE:-}" && -f "${VM_INIT_TALLY_FILE}" ]]; then
+    local installed_tools=0 upgraded_tools=0 current_tools=0
+    installed_tools=$(grep -c '^installed$' "$VM_INIT_TALLY_FILE" 2>/dev/null || echo 0)
+    upgraded_tools=$(grep -c '^upgraded$' "$VM_INIT_TALLY_FILE" 2>/dev/null || echo 0)
+    current_tools=$(grep -c '^current$' "$VM_INIT_TALLY_FILE" 2>/dev/null || echo 0)
+    if (( installed_tools + upgraded_tools + current_tools > 0 )); then
+      printf "  ${_C_BRIGHT_GREEN}installed${_C_RESET}: %d   ${_C_BRIGHT_CYAN}upgraded${_C_RESET}: %d   ${_C_GREEN}current${_C_RESET}: %d\n" \
+        "$installed_tools" "$upgraded_tools" "$current_tools"
+    fi
+  fi
 
   [[ -n "${LOG_FILE:-}" ]] && printf "  ${_C_DIM}Log:${_C_RESET} ${_C_CYAN}%s${_C_RESET}\n" "${LOG_FILE}"
 
