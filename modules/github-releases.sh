@@ -232,6 +232,57 @@ install_systemd_manager_tui() {
   fi
 }
 
+install_fresh() {
+  local sys_arch
+  sys_arch=$(dpkg --print-architecture)
+  case "$sys_arch" in
+    amd64|arm64) ;;
+    *) log_skip "fresh: only amd64/arm64 .deb available (skip on ${sys_arch})"
+       return 0 ;;
+  esac
+
+  log_step "fresh"
+
+  local tag
+  tag=$(github_latest_version "sinelaw/fresh") || return 1
+
+  local decision action old
+  decision=$(github_release_decide "fresh" "fresh" "$tag")
+  action="${decision%% *}"
+  old="${decision#"${action}"}"; old="${old# }"
+
+  if [[ "$action" == "current" ]]; then
+    log_current "fresh" "$old"
+    return 0
+  fi
+
+  local version deb_url deb_tmp
+  version="${tag#v}"
+  deb_url="https://github.com/sinelaw/fresh/releases/download/${tag}/fresh-editor_${version}-1_${sys_arch}.deb"
+
+  deb_tmp=$(mktemp --suffix=.deb)
+  # shellcheck disable=SC2064
+  trap "rm -f -- '${deb_tmp}'" RETURN
+
+  if ! download_file "$deb_url" "$deb_tmp"; then
+    log_fail "Failed to download fresh from ${deb_url}"
+    return 1
+  fi
+  try_verify_github_asset "$deb_tmp" "${deb_url}.sha256" || return 1
+  if ! run_quiet dpkg -i "$deb_tmp"; then
+    log_fail "dpkg -i failed for fresh"
+    return 1
+  fi
+
+  state_set "github_release.fresh" "$tag"
+
+  if [[ "$action" == "upgrade" ]]; then
+    log_upgraded "fresh" "$old" "$tag"
+  else
+    log_installed "fresh" "$tag"
+  fi
+}
+
 install_bat() {
   local sys_arch target
   sys_arch=$(dpkg --print-architecture)
@@ -293,7 +344,7 @@ install_github_releases() {
 
   install_github_releases_generic
 
-  local custom_tools=("bandwhich" "vortix" "somo" "systemd_manager_tui" "bat")
+  local custom_tools=("bandwhich" "vortix" "somo" "systemd_manager_tui" "bat" "fresh")
   for tool in "${custom_tools[@]}"; do
     local enabled
     enabled=$(yq ".github_releases.custom.${tool} // false" "$CONFIG")

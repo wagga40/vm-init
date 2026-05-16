@@ -92,6 +92,7 @@ github_releases:
     somo: true
     systemd_manager_tui: true
     bat: true
+    fresh: true
 
 shell:
   enabled: true

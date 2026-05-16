@@ -19,7 +19,7 @@ A very opinionated config-driven tool for provisioning Ubuntu machines. It start
 | **docker** | off | Docker engine + compose plugin |
 | **python** | off | uv and pre-commit via pipx by default when enabled |
 | **github-tools** | off | GitHub CLI (`gh`), optionally act (local GitHub Actions) |
-| **github-releases** | off | lazydocker, xplr, task, zoxide, bandwhich, vortix, somo, systemd-manager-tui, bat |
+| **github-releases** | off | lazydocker, xplr, task, zoxide, bandwhich, vortix, somo, systemd-manager-tui, bat, fresh |
 
 Each module can be toggled on/off or customized in `vm-init.yml`. Advanced modules are intentionally opt-in so a first run stays simple and predictable.
 
