@@ -725,6 +725,23 @@ print_kv "Config"   "${_C_CYAN}${CONFIG}${_C_RESET}"
 [[ "$VM_INIT_DRY_RUN"    == "1" ]] && print_kv "Dry-run"    "${_C_YELLOW}${_C_BOLD}ON${_C_RESET}"
 
 # ---------------------------------------------------------------------------
+# Pre-flight: wait for any background apt/dpkg holder before touching the
+# system. On fresh cloud images apt-daily-upgrade.service / unattended-upgrades
+# routinely run on first boot; without an explicit early check the user sees
+# silence until the first module reaches its apt step.
+# ---------------------------------------------------------------------------
+
+if [[ "$VM_INIT_DRY_RUN" != "1" ]]; then
+  echo ""
+  log_step "Checking for background apt/dpkg activity"
+  if ! wait_apt_lock; then
+    log_fail "Aborting — another apt/dpkg process is still active."
+    exit 1
+  fi
+  log_ok "No background apt/dpkg activity"
+fi
+
+# ---------------------------------------------------------------------------
 # yq bootstrap (skipped in dry-run)
 # ---------------------------------------------------------------------------
 
