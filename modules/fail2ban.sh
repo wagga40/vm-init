@@ -25,7 +25,7 @@ fail2ban_resolve_banaction() {
 # Currently supports: sshd (enabled/disabled).
 fail2ban_render_jail_blocks() {
   local sshd_enabled
-  sshd_enabled=$(yq_get '.fail2ban.jails.sshd.enabled' true "$CONFIG")
+  sshd_enabled=$(yq_get '.fail2ban.jails.sshd.enabled' false "$CONFIG")
 
   cat <<EOF
 

@@ -605,7 +605,7 @@ list_modules_cmd() {
   local spec section enabled selected
   for spec in "${VM_INIT_MODULES[@]}"; do
     section="${spec%%:*}"
-    enabled=$(yq_get ".${section}.enabled" true "$CONFIG")
+    enabled=$(yq_get ".${section}.enabled" false "$CONFIG")
     if module_excluded "$section"; then
       selected="filtered"
       filtered_count=$((filtered_count + 1))
@@ -757,7 +757,7 @@ validate_config() {
 
   log_step "Validating config"
 
-  if [[ "$(yq_get '.dns.enabled' true "$CONFIG")" == "true" ]]; then
+  if [[ "$(yq_get '.dns.enabled' false "$CONFIG")" == "true" ]]; then
     val=$(yq_get '.dns.server' "" "$CONFIG")
     if [[ -n "$val" ]]; then
       if [[ "$val" != https://* && "$val" != tls://* ]]; then
@@ -772,7 +772,7 @@ validate_config() {
     fi
   fi
 
-  if [[ "$(yq_get '.ufw.enabled' true "$CONFIG")" == "true" ]]; then
+  if [[ "$(yq_get '.ufw.enabled' false "$CONFIG")" == "true" ]]; then
     for dir in incoming outgoing; do
       val=$(yq_get ".ufw.defaults.${dir}" "" "$CONFIG")
       if [[ -n "$val" ]]; then
@@ -787,7 +787,7 @@ validate_config() {
     done
   fi
 
-  if [[ "$(yq_get '.fail2ban.enabled' true "$CONFIG")" == "true" ]]; then
+  if [[ "$(yq_get '.fail2ban.enabled' false "$CONFIG")" == "true" ]]; then
     val=$(yq_get '.fail2ban.maxretry' 5 "$CONFIG")
     if ! [[ "$val" =~ ^[0-9]+$ ]] || (( val < 1 )); then
       log_fail "fail2ban.maxretry must be a positive integer: got '$val'"
@@ -802,7 +802,7 @@ validate_config() {
     esac
   fi
 
-  if [[ "$(yq_get '.github_releases.enabled' true "$CONFIG")" == "true" ]]; then
+  if [[ "$(yq_get '.github_releases.enabled' false "$CONFIG")" == "true" ]]; then
     count=$(yq '.github_releases.generic // [] | length' "$CONFIG")
     for ((i = 0; i < count; i++)); do
       for field in repo binary asset_pattern; do
@@ -815,7 +815,7 @@ validate_config() {
     done
   fi
 
-  if [[ "$(yq_get '.shell.enabled' true "$CONFIG")" == "true" ]]; then
+  if [[ "$(yq_get '.shell.enabled' false "$CONFIG")" == "true" ]]; then
     val=$(yq_get '.shell.default_shell' "" "$CONFIG")
     if [[ -n "$val" ]]; then
       case "$val" in
@@ -923,7 +923,7 @@ dry_run_preview() {
       _dry_run_line "${_C_DIM}(no preview available for ${section})${_C_RESET}"
       ;;
   esac
-  val=$(yq_get ".${section}.enabled" true "$CONFIG")
+  val=$(yq_get ".${section}.enabled" false "$CONFIG")
   if [[ "$val" != "true" ]]; then
     echo -e "  ${_C_DIM}(module is disabled in config — would not run)${_C_RESET}"
   fi
@@ -955,7 +955,7 @@ run_module() {
     return 0
   fi
 
-  enabled=$(yq_get ".${section}.enabled" true "$CONFIG")
+  enabled=$(yq_get ".${section}.enabled" false "$CONFIG")
   if [[ "$enabled" != "true" ]]; then
     log_skip "disabled in config"
     record_module_status "$section" "skipped" "disabled in config"

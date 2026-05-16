@@ -146,6 +146,8 @@ sudo ./vm-init.sh --config ./vm-init.yml
 
 ## Configuration
 
+> **Default for undeclared blocks:** `enabled: false`. Omit a section entirely and the corresponding module is treated as disabled — opt-in is always explicit.
+
 Edit `vm-init.yml` to customize. The default enables only the small baseline:
 
 ```yaml

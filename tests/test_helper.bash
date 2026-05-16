@@ -77,6 +77,9 @@ fail2ban:
   jails:
     sshd:
       enabled: true
+kernel:
+  enabled: true
+  mitigations_off: false
 dns:
   enabled: true
   server: https://base.dns.mullvad.net/dns-query
@@ -124,6 +127,9 @@ fail2ban:
   jails:
     sshd:
       enabled: true
+kernel:
+  enabled: true
+  mitigations_off: false
 dns:
   enabled: true
   server: https://base.dns.mullvad.net/dns-query
