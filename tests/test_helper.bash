@@ -97,6 +97,8 @@ github_releases:
   enabled: true
   generic: []
   custom: {}
+yazi:
+  enabled: true
 shell:
   enabled: true
   default_shell: fish
@@ -147,6 +149,8 @@ github_releases:
   enabled: true
   generic: []
   custom: {}
+yazi:
+  enabled: true
 shell:
   enabled: true
   default_shell: fish

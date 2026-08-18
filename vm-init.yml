@@ -94,6 +94,11 @@ github_releases:
     bat: true
     fresh: true
 
+yazi:
+  # Terminal file manager, installed from the upstream Yazi apt repository
+  # (adds /etc/apt/sources.list.d/yazi.list and its signing keyring).
+  enabled: false
+
 shell:
   enabled: true
   default_shell: fish

@@ -358,6 +358,7 @@ VM_INIT_MODULES=(
   "python:python.sh:install_python"
   "github_tools:github-tools.sh:install_github_tools"
   "github_releases:github-releases.sh:install_github_releases"
+  "yazi:yazi.sh:install_yazi"
   "shell:shell.sh:install_shell"
 )
 
@@ -929,6 +930,9 @@ dry_run_preview() {
       _dry_run_line "Would install generic binaries: ${_C_BOLD}${generic:-<none>}${_C_RESET}"
       _dry_run_line "Would install custom tools:     ${_C_BOLD}${custom:-<none>}${_C_RESET}"
       ;;
+    yazi)
+      _dry_run_line "Would add the Yazi apt repository and install ${_C_BOLD}yazi${_C_RESET}"
+      ;;
     shell)
       local default_shell aliases
       default_shell=$(yq_get '.shell.default_shell' "fish" "$CONFIG")
@@ -1068,9 +1072,9 @@ print_summary() {
 
   if [[ -n "${VM_INIT_TALLY_FILE:-}" && -f "${VM_INIT_TALLY_FILE}" ]]; then
     local installed_tools=0 upgraded_tools=0 current_tools=0
-    installed_tools=$(grep -c '^installed$' "$VM_INIT_TALLY_FILE" 2>/dev/null || echo 0)
-    upgraded_tools=$(grep -c '^upgraded$' "$VM_INIT_TALLY_FILE" 2>/dev/null || echo 0)
-    current_tools=$(grep -c '^current$' "$VM_INIT_TALLY_FILE" 2>/dev/null || echo 0)
+    installed_tools=$(grep -c '^installed$' "$VM_INIT_TALLY_FILE" 2>/dev/null) || installed_tools=0
+    upgraded_tools=$(grep -c '^upgraded$' "$VM_INIT_TALLY_FILE" 2>/dev/null) || upgraded_tools=0
+    current_tools=$(grep -c '^current$' "$VM_INIT_TALLY_FILE" 2>/dev/null) || current_tools=0
     if (( installed_tools + upgraded_tools + current_tools > 0 )); then
       printf "  ${_C_BRIGHT_GREEN}installed${_C_RESET}: %d   ${_C_BRIGHT_CYAN}upgraded${_C_RESET}: %d   ${_C_GREEN}current${_C_RESET}: %d\n" \
         "$installed_tools" "$upgraded_tools" "$current_tools"

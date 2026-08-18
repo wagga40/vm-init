@@ -43,6 +43,7 @@ MODULES=(
   "${REPO_ROOT}/modules/python.sh"
   "${REPO_ROOT}/modules/github-tools.sh"
   "${REPO_ROOT}/modules/github-releases.sh"
+  "${REPO_ROOT}/modules/yazi.sh"
   "${REPO_ROOT}/modules/shell.sh"
 )
 

@@ -177,10 +177,10 @@ SH
 
 # ---------- --list-modules ----------
 
-@test "--list-modules prints all 10 modules" {
+@test "--list-modules prints all 11 modules" {
   run "$VM_INIT_SH" --list-modules --config "$CONFIG"
   [ "$status" -eq 0 ]
-  for mod in apt ufw fail2ban kernel dns docker python github_tools github_releases shell; do
+  for mod in apt ufw fail2ban kernel dns docker python github_tools github_releases yazi shell; do
     [[ "$output" == *"$mod"* ]] || { echo "missing: $mod"; echo "$output"; return 1; }
   done
 }
@@ -204,7 +204,7 @@ SH
   run "$VM_INIT_SH" --list-modules --config "$VM_INIT_DEFAULT_CONFIG"
   [ "$status" -eq 0 ]
   [[ "$output" == *"on: 2"* ]]
-  [[ "$output" == *"off: 8"* ]]
+  [[ "$output" == *"off: 9"* ]]
 }
 
 # ---------- --dry-run ----------
@@ -256,6 +256,7 @@ docker: {enabled: false}
 python: {enabled: false}
 github_tools: {enabled: false}
 github_releases: {enabled: false}
+yazi: {enabled: false}
 shell: {enabled: false}
 YAML
 
@@ -263,7 +264,7 @@ YAML
   run "$VM_INIT_SH" --dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"ok: 1"* ]]
-  [[ "$output" == *"skipped: 9"* ]]
+  [[ "$output" == *"skipped: 10"* ]]
 }
 
 @test "--dry-run does not write to /var/log" {
@@ -279,7 +280,7 @@ YAML
   run "$VM_INIT_SH" --dry-run --only dns --config "$CONFIG"
   [ "$status" -eq 0 ]
   [[ "$output" == *"ok: 1"* ]]
-  [[ "$output" == *"skipped: 9"* ]]
+  [[ "$output" == *"skipped: 10"* ]]
 }
 
 @test "--skip excludes modules" {
@@ -299,7 +300,7 @@ YAML
   run "$VM_INIT_SH" --dry-run --only apt,dns --config "$CONFIG"
   [ "$status" -eq 0 ]
   [[ "$output" == *"ok: 2"* ]]
-  [[ "$output" == *"skipped: 8"* ]]
+  [[ "$output" == *"skipped: 9"* ]]
 }
 
 # ---------- config validation ----------

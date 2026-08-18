@@ -20,6 +20,7 @@ A very opinionated config-driven tool for provisioning Ubuntu machines. It start
 | **python** | off | uv and pre-commit via pipx by default when enabled |
 | **github-tools** | off | GitHub CLI (`gh`), optionally act (local GitHub Actions) |
 | **github-releases** | off | lazydocker, xplr, task, zoxide, bandwhich, vortix, somo, systemd-manager-tui, bat, fresh |
+| **yazi** | off | [Yazi](https://github.com/sxyazi/yazi) terminal file manager, from the upstream apt repository |
 
 Each module can be toggled on/off or customized in `vm-init.yml`. Advanced modules are intentionally opt-in so a first run stays simple and predictable.
 
@@ -160,6 +161,9 @@ apt:
 
 docker:
   enabled: false  # opt in when needed
+
+yazi:
+  enabled: false  # adds the upstream Yazi apt repo, then installs `yazi`
 
 github_tools:
   enabled: false

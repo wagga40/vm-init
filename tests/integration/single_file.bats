@@ -54,10 +54,10 @@ teardown() {
   grep -q '^export VM_INIT_BUNDLED_VERSION=' "$BUNDLE"
 }
 
-@test "build-single: bundle embeds all 10 install_ entry functions" {
+@test "build-single: bundle embeds all 11 install_ entry functions" {
   for fn in install_apt install_ufw install_fail2ban install_kernel install_dns \
             install_docker install_python install_github_tools \
-            install_github_releases install_shell; do
+            install_github_releases install_yazi install_shell; do
     grep -q "^${fn}() {" "$BUNDLE" \
       || { echo "missing entry: $fn"; return 1; }
   done
@@ -117,7 +117,7 @@ teardown() {
   cd "$TEST_TMPDIR"
   run "$BUNDLE" --list-modules
   [ "$status" -eq 0 ]
-  for mod in apt ufw fail2ban kernel dns docker python github_tools github_releases shell; do
+  for mod in apt ufw fail2ban kernel dns docker python github_tools github_releases yazi shell; do
     [[ "$output" == *"$mod"* ]] || { echo "missing: $mod"; echo "$output"; return 1; }
   done
 }
@@ -132,7 +132,7 @@ teardown() {
   [[ "$output" == *"DRY RUN"* ]]
   [[ "$output" == *"Dry run complete"* ]]
   [[ "$output" == *"ok: 2"* ]]
-  [[ "$output" == *"skipped: 8"* ]]
+  [[ "$output" == *"skipped: 9"* ]]
 }
 
 @test "bundle: explicit --config overrides embedded default" {
@@ -152,13 +152,14 @@ docker: {enabled: false}
 python: {enabled: false}
 github_tools: {enabled: false}
 github_releases: {enabled: false}
+yazi: {enabled: false}
 shell: {enabled: false}
 YAML
   cd "$TEST_TMPDIR"
   run "$BUNDLE" --dry-run --config "$user_cfg"
   [ "$status" -eq 0 ]
   [[ "$output" == *"ok: 1"* ]]
-  [[ "$output" == *"skipped: 9"* ]]
+  [[ "$output" == *"skipped: 10"* ]]
 }
 
 @test "bundle: ./vm-init.yml overrides embedded default when --config is omitted" {
@@ -182,6 +183,7 @@ docker: {enabled: false}
 python: {enabled: false}
 github_tools: {enabled: false}
 github_releases: {enabled: false}
+yazi: {enabled: false}
 shell: {enabled: false}
 YAML
 
@@ -189,7 +191,7 @@ YAML
   run "$BUNDLE" --dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"ok: 1"* ]]
-  [[ "$output" == *"skipped: 9"* ]]
+  [[ "$output" == *"skipped: 10"* ]]
 }
 
 @test "bundle: explicit --config with missing file errors (no silent fallback)" {
@@ -252,7 +254,7 @@ YAML
   run "$BUNDLE" --dry-run --config "${workdir}/vm-init.yml"
   [ "$status" -eq 0 ]
   [[ "$output" == *"ok: 2"* ]]
-  [[ "$output" == *"skipped: 8"* ]]
+  [[ "$output" == *"skipped: 9"* ]]
 }
 
 @test "bundle: --only unknown errors with clear message" {
@@ -278,5 +280,5 @@ YAML
   run ./vm-init --dry-run
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
   [[ "$output" == *"ok: 2"* ]]
-  [[ "$output" == *"skipped: 8"* ]]
+  [[ "$output" == *"skipped: 9"* ]]
 }
