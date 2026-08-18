@@ -2,6 +2,42 @@
 # Fish shell configuration module.
 # Reads: CONFIG (path to vm-init.yml)
 
+# Run `fish -c <cmd>` as <user>.
+#
+# Three wrinkles this handles:
+#   * The `cd /` is not cosmetic: vm-init normally runs with cwd=/root (mode
+#     0700), which the target user cannot open, and fish then aborts the
+#     command with "Unable to open the current working directory".
+#   * `</dev/null` is mandatory. Callers drive these commands from
+#     `while read ... < <(human_users)` loops, and fisher reads plugin names
+#     from stdin when it isn't a tty — so without this it swallows the rest of
+#     the user list ("fisher: Plugin not installed: bob:/home/bob") and every
+#     account after the first is silently skipped.
+#   * Hopping through `sh -c` (rather than a subshell `cd`) keeps sudo as the
+#     outer command so run_quiet still applies its timeout.
+run_fish_as() {
+  local user="$1" fish_cmd="$2"
+  # shellcheck disable=SC2016  # "$1" is sh's positional arg, not ours
+  if [[ "$user" == "root" ]]; then
+    run_quiet sh -c 'cd / && exec fish -c "$1"' _ "$fish_cmd" < /dev/null
+  else
+    run_quiet sudo -u "$user" sh -c 'cd / && exec fish -c "$1"' _ "$fish_cmd" < /dev/null
+  fi
+}
+
+# True when the `fisher` function is available for <user>. Probed per account:
+# Fisher installs into ~/.config/fish/functions, so root having it says nothing
+# about a human user (who may have been added after the first run, or had their
+# home recreated). `functions -q` triggers fish's autoloader and stays silent.
+fisher_present_for() {
+  local user="$1"
+  if [[ "$user" == "root" ]]; then
+    sh -c 'cd / && exec fish -c "functions -q fisher"' < /dev/null >/dev/null 2>&1
+  else
+    sudo -u "$user" sh -c 'cd / && exec fish -c "functions -q fisher"' < /dev/null >/dev/null 2>&1
+  fi
+}
+
 install_fisher_tide() {
   local user="$1"
   local home_dir="$2"
@@ -33,14 +69,38 @@ install_fisher_tide() {
     return 0
   fi
 
-  if [[ "$user" == "root" ]]; then
-    run_quiet fish -c "$fish_cmd"
-  else
-    if ! run_quiet sudo -u "$user" fish -c "$fish_cmd"; then
-      log_fail "Failed to install Fisher/Tide for ${user}"
-      return 1
-    fi
+  if ! run_fish_as "$user" "$fish_cmd"; then
+    log_fail "Failed to install Fisher/Tide for ${user}"
+    return 1
+  fi
+
+  if [[ "$user" != "root" ]]; then
     chown -R "$user:$user" "${home_dir}/.config" 2>/dev/null || true
+  fi
+}
+
+# Bring one account to the desired Fisher state: install when the account has
+# no fisher yet, otherwise refresh its plugins.
+setup_fisher_for() {
+  local user="$1" home_dir="$2"
+
+  if should_force || ! fisher_present_for "$user"; then
+    log_step "Installing Fisher + Tide (${user})"
+    install_fisher_tide "$user" "$home_dir" || return 1
+    log_installed "fisher+tide (${user})"
+    return 0
+  fi
+
+  if ! should_upgrade; then
+    log_current "fisher (${user})"
+    return 0
+  fi
+
+  log_step "Updating Fisher plugins (${user})"
+  if run_fish_as "$user" 'fisher update'; then
+    log_upgraded "fisher plugins (${user})"
+  else
+    log_warn "fisher update (${user}) returned non-zero"
   fi
 }
 
@@ -75,40 +135,14 @@ install_shell() {
   local fisher_enabled
   fisher_enabled=$(yq_get '.shell.fisher' true "$CONFIG")
   if [[ "$fisher_enabled" == "true" ]]; then
-    local fisher_present=0
-    fish -c 'fisher --version' >/dev/null 2>&1 && fisher_present=1
+    # Each account is decided on its own state. Gating every account on root's
+    # made a user without fisher take the update path and fail with
+    # "fish: Unknown command: fisher" (exit 127).
+    setup_fisher_for "root" "/root" || return 1
 
-    if should_force || ! (( fisher_present )); then
-      log_step "Installing Fisher + Tide (root)"
-      install_fisher_tide "root" "/root"
-      log_installed "fisher+tide (root)"
-
-      while IFS=: read -r u home_dir; do
-        log_step "Installing Fisher + Tide (${u})"
-        chown -R "$u:$u" "${home_dir}/.config" 2>/dev/null || true
-        install_fisher_tide "$u" "$home_dir"
-        chown -R "$u:$u" "${home_dir}/.config" 2>/dev/null || true
-        log_installed "fisher+tide (${u})"
-      done < <(human_users)
-    elif should_upgrade; then
-      log_step "Updating Fisher plugins (root)"
-      if run_quiet fish -c 'fisher update'; then
-        log_upgraded "fisher plugins (root)"
-      else
-        log_warn "fisher update (root) returned non-zero"
-      fi
-
-      while IFS=: read -r u _home; do
-        log_step "Updating Fisher plugins (${u})"
-        if run_quiet sudo -u "$u" fish -c 'fisher update'; then
-          log_upgraded "fisher plugins (${u})"
-        else
-          log_warn "fisher update (${u}) returned non-zero"
-        fi
-      done < <(human_users)
-    else
-      log_current "fisher"
-    fi
+    while IFS=: read -r u home_dir; do
+      setup_fisher_for "$u" "$home_dir" || return 1
+    done < <(human_users)
   fi
 
   # Aliases

@@ -349,6 +349,114 @@ EOF
   [ "$status" -ne 0 ]
 }
 
+@test "run_fish_as: runs fish from a directory the target user can open" {
+  # shellcheck source=/dev/null
+  source "${VM_INIT_REPO_ROOT}/modules/shell.sh"
+  captured="$TEST_TMPDIR/captured"
+  run_quiet() { printf '%s\n' "$*" > "$captured"; }
+
+  run_fish_as alice 'fisher update'
+
+  grep -q 'sudo -u alice' "$captured"
+  grep -q 'cd /' "$captured"
+  grep -q 'fisher update' "$captured"
+}
+
+@test "setup_fisher_for: installs when the account has no fisher" {
+  # shellcheck source=/dev/null
+  source "${VM_INIT_REPO_ROOT}/modules/shell.sh"
+  fisher_present_for() { return 1; }
+  install_fisher_tide() { echo "installed-for:$1"; }
+  run_fish_as() { echo "ran:$2"; }
+
+  run setup_fisher_for alice "$TEST_TMPDIR/home"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"installed-for:alice"* ]]
+  [[ "$output" != *"ran:fisher update"* ]]
+}
+
+@test "setup_fisher_for: updates when the account already has fisher" {
+  # shellcheck source=/dev/null
+  source "${VM_INIT_REPO_ROOT}/modules/shell.sh"
+  fisher_present_for() { return 0; }
+  install_fisher_tide() { echo "installed-for:$1"; }
+  run_fish_as() { echo "ran:$2"; }
+
+  run setup_fisher_for alice "$TEST_TMPDIR/home"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ran:fisher update"* ]]
+  [[ "$output" != *"installed-for:alice"* ]]
+}
+
+@test "install_shell: a fish command cannot swallow the remaining user list" {
+  # Regression: fisher reads plugin names from stdin when it is not a tty, so
+  # inside `while read ... < <(human_users)` it consumed the next user's line
+  # and every account after the first was skipped.
+  # shellcheck source=/dev/null
+  source "${VM_INIT_REPO_ROOT}/modules/shell.sh"
+  yq() {
+    case "$1" in
+      ".shell.default_shell"*) echo env ;;
+      *) return 0 ;;
+    esac
+  }
+  yq_get() {
+    case "$1" in
+      ".shell.fisher") echo true ;;
+      *) echo false ;;
+    esac
+  }
+  require_commands() { return 0; }
+  human_users() { printf 'alice:%s\nbob:%s\n' "$TEST_TMPDIR/alice" "$TEST_TMPDIR/bob"; }
+  usermod() { return 0; }
+  chsh() { return 0; }
+  fisher_present_for() { return 0; }
+  # Stand in for fisher: reads a line from whatever stdin it is handed
+  # (bounded, so the leak shows up as a failed assertion, not a hang).
+  run_quiet() { read -r -t 1 _leaked || true; }
+
+  run install_shell
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Updating Fisher plugins (alice)"* ]]
+  [[ "$output" == *"Updating Fisher plugins (bob)"* ]]
+}
+
+@test "install_shell: installs fisher for a user who lacks it even when root has it" {
+  # Regression: presence used to be probed only for root, so a user without
+  # fisher took the update path and failed with "Unknown command: fisher".
+  # shellcheck source=/dev/null
+  source "${VM_INIT_REPO_ROOT}/modules/shell.sh"
+  yq() {
+    case "$1" in
+      ".shell.default_shell"*) echo env ;;
+      *) return 0 ;;
+    esac
+  }
+  yq_get() {
+    case "$1" in
+      ".shell.fisher") echo true ;;
+      *) echo false ;;
+    esac
+  }
+  require_commands() { return 0; }
+  human_users() { echo "alice:${TEST_TMPDIR}/home"; }
+  usermod() { return 0; }
+  chsh() { return 0; }
+  fisher_present_for() { [[ "$1" == "root" ]]; }
+  install_fisher_tide() { echo "installed-for:$1"; }
+  run_fish_as() { echo "ran:$1:$2"; }
+
+  run install_shell
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"installed-for:alice"* ]]
+  [[ "$output" == *"ran:root:fisher update"* ]]
+  [[ "$output" != *"ran:alice:fisher update"* ]]
+}
+
 @test "install_shell: fails when changing a human user's shell fails" {
   # shellcheck source=/dev/null
   source "${VM_INIT_REPO_ROOT}/modules/shell.sh"
