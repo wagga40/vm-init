@@ -43,3 +43,35 @@ install_ufw() {
   run_quiet ufw --force enable
   log_ok "ufw configured (incoming: ${incoming}, outgoing: ${outgoing})"
 }
+
+# Post-install verification: the firewall is actually up and every configured
+# allow rule is present in the live ruleset.
+verify_ufw() {
+  require_commands ufw || return 1
+
+  local status rules rule missing=()
+  if ! status=$(ufw status 2>/dev/null); then
+    log_fail "ufw status failed (needs root)"
+    return 1
+  fi
+
+  if ! grep -qi '^Status: active' <<< "$status"; then
+    log_fail "ufw is installed but not active"
+    return 1
+  fi
+  log_ok "ufw active"
+
+  rules=$(yq '.ufw.allow[]? // ""' "$CONFIG")
+  while IFS= read -r rule; do
+    [[ -z "$rule" ]] && continue
+    # `ufw status` lists a service rule by its name (OpenSSH) and a port rule by
+    # its number, so a substring match is the right granularity here.
+    grep -qF "$rule" <<< "$status" || missing+=("$rule")
+  done <<< "$rules"
+
+  if (( ${#missing[@]} > 0 )); then
+    log_fail "allow rule(s) not in the live ruleset: ${missing[*]}"
+    return 1
+  fi
+  log_ok "all configured allow rules present"
+}

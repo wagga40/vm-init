@@ -18,8 +18,31 @@ install_apt() {
   run_quiet apt_get update -q
   log_ok "apt index updated"
 
+  # Availability guard. Everything below installs in a single apt-get call, so
+  # one name absent from this release would fail the whole batch and leave
+  # nothing installed. Partition against the freshly updated index instead, and
+  # say plainly what got dropped.
+  local available="" unavailable="" pkg
+  while IFS= read -r pkg; do
+    [[ -z "$pkg" ]] && continue
+    if apt_available "$pkg"; then
+      available+="${pkg}"$'\n'
+    else
+      unavailable+="${pkg} "
+    fi
+  done <<< "$packages"
+
+  if [[ -n "$unavailable" ]]; then
+    log_warn "Not available on this Ubuntu release — skipped: ${unavailable% }"
+  fi
+
+  packages="${available%$'\n'}"
+  if [[ -z "$packages" ]]; then
+    log_warn "None of the configured APT packages are available on this release"
+    return 0
+  fi
+
   declare -A pre_versions=()
-  local pkg
   while IFS= read -r pkg; do
     [[ -z "$pkg" ]] && continue
     pre_versions[$pkg]=$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)
@@ -64,4 +87,42 @@ install_apt() {
   done <<< "$packages"
 
   log_info "APT: ${installed_n} installed, ${upgraded_n} upgraded, ${current_n} current"
+}
+
+# Post-install verification: every configured package is actually installed.
+# Names that this Ubuntu release does not carry are reported as skipped rather
+# than missing, matching what install_apt would have done with them.
+verify_apt() {
+  require_commands dpkg-query apt-cache || return 1
+
+  local packages pkg present=0
+  local missing=() unavailable=()
+  packages=$(yq '.apt.packages | to_entries | .[].value | .[]' "$CONFIG" | sort -u)
+
+  if [[ -z "$packages" ]]; then
+    log_skip "No APT packages configured"
+    return 0
+  fi
+
+  while IFS= read -r pkg; do
+    [[ -z "$pkg" ]] && continue
+    if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q '^install ok installed$'; then
+      present=$((present + 1))
+    elif ! apt_available "$pkg"; then
+      unavailable+=("$pkg")
+    else
+      missing+=("$pkg")
+    fi
+  done <<< "$packages"
+
+  if (( ${#unavailable[@]} > 0 )); then
+    log_skip "not available on this release: ${unavailable[*]}"
+  fi
+
+  if (( ${#missing[@]} > 0 )); then
+    log_fail "${#missing[@]} configured package(s) not installed: ${missing[*]}"
+    return 1
+  fi
+
+  log_ok "${present} configured package(s) installed"
 }

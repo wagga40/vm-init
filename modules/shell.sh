@@ -131,6 +131,7 @@ install_shell() {
   if (( shell_change_errors > 0 )); then
     return 1
   fi
+  vm_init_note "Default shell is now ${default_shell} — start a new session or run: exec ${default_shell}"
 
   local fisher_enabled
   fisher_enabled=$(yq_get '.shell.fisher' true "$CONFIG")
@@ -214,4 +215,56 @@ install_shell() {
     echo 'export PATH="/usr/local/bin:$PATH"' > /etc/profile.d/pipx-path.sh
     log_ok "direnv configured"
   fi
+}
+
+# Post-install verification: every account's login shell is the configured one,
+# and each alias that should have been written is in that account's config.fish.
+verify_shell() {
+  require_commands getent || return 1
+
+  local default_shell shell_path rc=0
+  default_shell=$(yq_get '.shell.default_shell' "fish" "$CONFIG")
+  shell_path="/usr/bin/${default_shell}"
+
+  if [[ ! -x "$shell_path" ]]; then
+    log_fail "${default_shell} not found at ${shell_path}"
+    return 1
+  fi
+
+  local u home_dir actual
+  local wrong=()
+  while IFS=: read -r u home_dir; do
+    actual=$(getent passwd "$u" | awk -F: '{print $7}')
+    [[ "$actual" == "$shell_path" ]] || wrong+=("${u} (${actual:-unset})")
+  done < <(printf 'root:/root\n'; human_users)
+
+  if (( ${#wrong[@]} > 0 )); then
+    log_fail "login shell is not ${shell_path} for: ${wrong[*]}"
+    rc=1
+  else
+    log_ok "login shell is ${shell_path} for root and all human users"
+  fi
+
+  # Aliases are only written for commands that exist, so an alias whose target
+  # is absent was legitimately skipped rather than lost.
+  local alias_keys key value cmd alias_line
+  local missing_aliases=()
+  alias_keys=$(yq '.shell.aliases // {} | keys | .[]' "$CONFIG" 2>/dev/null)
+  while IFS= read -r key; do
+    [[ -z "$key" ]] && continue
+    value=$(yq ".shell.aliases.${key}" "$CONFIG")
+    cmd="${value%% *}"
+    is_installed "$cmd" || continue
+    alias_line="alias ${key}=\"${value}\""
+    grep -qxF "$alias_line" /root/.config/fish/config.fish 2>/dev/null \
+      || missing_aliases+=("$key")
+  done <<< "$alias_keys"
+
+  if (( ${#missing_aliases[@]} > 0 )); then
+    log_warn "alias(es) missing from root's config.fish: ${missing_aliases[*]}"
+  elif [[ -n "$alias_keys" ]]; then
+    log_ok "configured aliases present"
+  fi
+
+  return "$rc"
 }

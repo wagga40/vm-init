@@ -63,6 +63,17 @@ teardown() {
   done
 }
 
+@test "build-single: bundle embeds a verify_ function for all 11 modules" {
+  # The orchestrator derives the name (verify_<section>), so a module that ships
+  # without one silently degrades --verify to "no verification available".
+  for fn in verify_apt verify_ufw verify_fail2ban verify_kernel verify_dns \
+            verify_docker verify_python verify_github_tools \
+            verify_github_releases verify_yazi verify_shell; do
+    grep -q "^${fn}() {" "$BUNDLE" \
+      || { echo "missing verify function: $fn"; return 1; }
+  done
+}
+
 @test "build-single: bundle embeds the default vm-init.yml verbatim" {
   embedded="$TEST_TMPDIR/embedded.yml"
   awk '

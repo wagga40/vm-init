@@ -215,3 +215,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo ./vm-init.sh --config ci-real-install.yml --only apt
+
+      - name: Verify the installed state
+        run: |
+          set -euo pipefail
+          sudo ./vm-init.sh --config ci-real-install.yml --verify --only apt

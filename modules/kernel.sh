@@ -49,6 +49,7 @@ install_kernel() {
     log_step "Running update-grub"
     run_quiet update-grub
     log_ok "update-grub complete (reboot to apply)"
+    vm_init_note "Reboot required: kernel boot parameters changed."
   fi
 }
 
@@ -133,4 +134,37 @@ _kernel_cmdline_set() {
 
   mv "$tmp" "$VM_INIT_GRUB_DEFAULTS"
   chmod 644 "$VM_INIT_GRUB_DEFAULTS"
+}
+
+# Post-install verification: /etc/default/grub matches config, and the *running*
+# kernel matches /etc/default/grub. The second comparison is the useful one —
+# it is how you find out a reboot is still pending weeks later.
+verify_kernel() {
+  if [[ ! -f "$VM_INIT_GRUB_DEFAULTS" ]]; then
+    log_skip "${VM_INIT_GRUB_DEFAULTS} not found"
+    return 0
+  fi
+
+  local want configured running
+  want=$(yq_get '.kernel.mitigations_off' false "$CONFIG")
+
+  if _kernel_cmdline_has "mitigations=off"; then configured="true"; else configured="false"; fi
+
+  if [[ "$configured" != "$want" ]]; then
+    log_fail "GRUB_CMDLINE_LINUX_DEFAULT disagrees with config (mitigations_off: want ${want}, found ${configured})"
+    return 1
+  fi
+  log_ok "grub cmdline matches config (mitigations_off: ${want})"
+
+  if [[ ! -r /proc/cmdline ]]; then
+    log_skip "/proc/cmdline unreadable — running kernel not checked"
+    return 0
+  fi
+  if grep -qw 'mitigations=off' /proc/cmdline; then running="true"; else running="false"; fi
+
+  if [[ "$running" != "$configured" ]]; then
+    log_warn "Running kernel does not match grub yet — reboot pending"
+    return 0
+  fi
+  log_ok "running kernel matches (mitigations=off: ${running})"
 }

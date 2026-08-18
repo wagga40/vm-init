@@ -34,9 +34,46 @@ https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
     if ! id -nG "$first_user" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
       usermod -aG docker "$first_user"
       log_info "Added ${first_user} to docker group (log out/in for group to apply)"
+      vm_init_note "Log out and back in for ${first_user}'s docker group membership to apply."
     fi
   fi
 
   run_quiet systemctl enable docker
   run_quiet systemctl start docker
+}
+
+# Post-install verification: the daemon is up, reachable, and the compose plugin
+# is wired in. `docker info` is the check that actually proves the socket works.
+verify_docker() {
+  require_commands systemctl || return 1
+
+  local rc=0
+
+  if ! is_installed docker; then
+    log_fail "docker is not installed"
+    return 1
+  fi
+
+  if systemctl is-active --quiet docker; then
+    log_ok "docker service active"
+  else
+    log_fail "docker service is not active"
+    rc=1
+  fi
+
+  if run_quiet docker info; then
+    log_ok "docker daemon reachable"
+  else
+    log_fail "docker info failed — daemon unreachable"
+    rc=1
+  fi
+
+  if run_quiet docker compose version; then
+    log_ok "docker compose plugin present"
+  else
+    log_fail "docker compose plugin missing"
+    rc=1
+  fi
+
+  return "$rc"
 }

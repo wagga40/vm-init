@@ -151,6 +151,31 @@ apt_get() {
     "$@"
 }
 
+# True when <pkg> has an installable candidate in the current apt index.
+#
+# apt.sh installs every configured package in a single apt-get call, so one name
+# that is absent from the running release would otherwise fail the whole batch
+# and leave nothing installed. Package availability legitimately differs across
+# Ubuntu releases (btop, duf), so callers partition first and report the drops.
+#
+# Reads the cached index — callers that need fresh data run `apt_get update`
+# themselves beforehand.
+apt_available() {
+  local pkg="$1" candidate
+  candidate=$(apt-cache policy -- "$pkg" 2>/dev/null \
+    | awk -F': *' '/^ *Candidate:/ {print $2; exit}')
+  [[ -n "$candidate" && "$candidate" != "(none)" ]] && return 0
+
+  # Purely virtual packages carry no candidate of their own but install fine
+  # when a real package provides them.
+  apt-cache showpkg -- "$pkg" 2>/dev/null \
+    | awk '
+        /^Reverse Provides:/ { found = 1; next }
+        found && NF         { provider = 1; exit }
+        END                 { exit provider ? 0 : 1 }
+      '
+}
+
 # ---------- Logging ----------
 
 log_step()  { echo -e "${_C_CYAN}${_C_BOLD}${_SYM_ARROW}${_C_RESET} ${_C_BOLD}$1${_C_RESET}"; }
@@ -173,6 +198,15 @@ log_done()  { echo -e "${_C_BRIGHT_GREEN}${_C_BOLD}${_SYM_OK}${_C_RESET} ${_C_BO
 _tally() {
   [[ -n "${VM_INIT_TALLY_FILE:-}" ]] || return 0
   printf '%s\n' "$1" >> "${VM_INIT_TALLY_FILE}" 2>/dev/null || true
+}
+
+# Record a follow-up action for the summary's "Next steps" block — a reboot, a
+# re-login, a recovery command. Modules run inside run_with_errexit subshells,
+# so notes travel through an env-passed file for the same reason the tally does.
+# Duplicates are collapsed when the summary renders.
+vm_init_note() {
+  [[ -n "${VM_INIT_NOTES_FILE:-}" ]] || return 0
+  printf '%s\n' "$1" >> "${VM_INIT_NOTES_FILE}" 2>/dev/null || true
 }
 
 log_installed() {

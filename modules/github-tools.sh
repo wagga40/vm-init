@@ -25,14 +25,22 @@ https://cli.github.com/packages stable main" \
   apt_install_with_report gh
 }
 
+# `act --version` prints "act version 0.2.68". Narrow and module-local on
+# purpose: _common.sh dropped its generic probe because TUI binaries launch
+# their UI instead of printing a version (see the NOTE there). act is a plain
+# CLI, so probing it is safe.
+_act_version() {
+  act --version 2>/dev/null | awk 'NR == 1 { print $NF }'
+}
+
 install_act() {
-  require_commands bash || return 1
+  require_commands bash awk || return 1
 
   log_step "act"
 
   local pre=""
   if is_installed act; then
-    pre=$(binary_version act 2>/dev/null || true)
+    pre=$(_act_version || true)
 
     if ! should_force && ! should_upgrade; then
       log_current "act" "v${pre:-unknown}"
@@ -62,7 +70,7 @@ install_act() {
   fi
 
   local post
-  post=$(binary_version act 2>/dev/null || true)
+  post=$(_act_version || true)
 
   if [[ -z "$pre" ]]; then
     log_installed "act" "v${post:-unknown}"
@@ -74,10 +82,51 @@ install_act() {
 }
 
 install_github_tools() {
-  local gh_enabled act_enabled
+  local gh_enabled act_enabled rc=0
   gh_enabled=$(yq_get '.github_tools.gh' true "$CONFIG")
   act_enabled=$(yq_get '.github_tools.act' true "$CONFIG")
 
-  [[ "$gh_enabled" == "true" ]] && install_gh
-  [[ "$act_enabled" == "true" ]] && install_act
+  # Explicit ifs, not `[[ ... ]] && install_x`: as the last statement of the
+  # function that idiom returns the *test's* status, so a disabled tool made the
+  # module report failure even when the enabled one installed cleanly.
+  if [[ "$gh_enabled" == "true" ]]; then
+    install_gh || rc=1
+  fi
+  if [[ "$act_enabled" == "true" ]]; then
+    install_act || rc=1
+  fi
+
+  return "$rc"
+}
+
+verify_github_tools() {
+  local gh_enabled act_enabled rc=0
+  gh_enabled=$(yq_get '.github_tools.gh' true "$CONFIG")
+  act_enabled=$(yq_get '.github_tools.act' true "$CONFIG")
+
+  if [[ "$gh_enabled" == "true" ]]; then
+    if is_installed gh && gh --version >/dev/null 2>&1; then
+      log_ok "gh $(gh --version 2>/dev/null | awk 'NR == 1 { print $3 }')"
+    else
+      log_fail "gh is enabled but not installed"
+      rc=1
+    fi
+  fi
+
+  if [[ "$act_enabled" == "true" ]]; then
+    local ver
+    ver=$(_act_version || true)
+    if [[ -n "$ver" ]]; then
+      log_ok "act ${ver}"
+    else
+      log_fail "act is enabled but not installed"
+      rc=1
+    fi
+  fi
+
+  if [[ "$gh_enabled" != "true" && "$act_enabled" != "true" ]]; then
+    log_skip "No GitHub tools enabled"
+  fi
+
+  return "$rc"
 }

@@ -335,6 +335,7 @@ EOF
 
   if verify_doh_resolves; then
     log_ok "dnsproxy configured and resolving via ${upstream}"
+    vm_init_note "DNS now goes through dnsproxy. If it breaks: sudo vm-init-recover-dns --with-fallback"
   else
     log_warn "dnsproxy is listening but DNS resolution failed"
     log_info "Debug: resolvectl status"
@@ -343,4 +344,45 @@ EOF
     log_info "Recovery: modules/recover-dns.sh --with-fallback"
     return 1
   fi
+}
+
+# Post-install verification. Reuses the helpers install_dns already relies on,
+# so the check and the install agree on what "working" means.
+verify_dns() {
+  require_commands systemctl getent || return 1
+
+  local listen_address listen_port upstream rc=0
+  listen_address=$(yq '.dns.listen_address // "127.0.0.1"' "$CONFIG")
+  listen_port=$(yq '.dns.listen_port // 5353' "$CONFIG")
+  upstream=$(yq '.dns.server // "<unset>"' "$CONFIG")
+
+  if ! is_installed dnsproxy; then
+    log_fail "dnsproxy is not installed"
+    return 1
+  fi
+
+  if systemctl is-active --quiet dnsproxy; then
+    log_ok "dnsproxy service active"
+  else
+    log_fail "dnsproxy service is not active"
+    log_info "Debug: journalctl -u dnsproxy -n 30 --no-pager"
+    rc=1
+  fi
+
+  if dnsproxy_listening_on "$listen_address" "$listen_port"; then
+    log_ok "listening on ${listen_address}:${listen_port}"
+  else
+    log_fail "nothing listening on ${listen_address}:${listen_port}"
+    rc=1
+  fi
+
+  if verify_doh_resolves; then
+    log_ok "name resolution works via ${upstream}"
+  else
+    log_fail "name resolution failed"
+    log_info "Recovery: sudo vm-init-recover-dns --with-fallback"
+    rc=1
+  fi
+
+  return "$rc"
 }

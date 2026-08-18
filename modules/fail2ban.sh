@@ -105,3 +105,42 @@ EOF
     return 1
   fi
 }
+
+# Post-install verification: the service is running and each jail we enabled in
+# config is actually loaded by fail2ban.
+verify_fail2ban() {
+  require_commands systemctl || return 1
+
+  if ! systemctl is-active --quiet fail2ban; then
+    log_fail "fail2ban is not active"
+    log_info "Debug: systemctl status fail2ban --no-pager"
+    return 1
+  fi
+  log_ok "fail2ban active"
+
+  if ! is_installed fail2ban-client; then
+    log_warn "fail2ban-client not on PATH — jail status not checked"
+    return 0
+  fi
+
+  local jails jail rc=0
+  jails=$(yq '.fail2ban.jails // {} | to_entries | .[] | select(.value.enabled == true) | .key' \
+    "$CONFIG" 2>/dev/null)
+
+  if [[ -z "$jails" ]]; then
+    log_skip "No jails enabled in config"
+    return 0
+  fi
+
+  while IFS= read -r jail; do
+    [[ -z "$jail" ]] && continue
+    if fail2ban-client status "$jail" >/dev/null 2>&1; then
+      log_ok "jail ${jail} loaded"
+    else
+      log_fail "jail ${jail} is enabled in config but not loaded"
+      rc=1
+    fi
+  done <<< "$jails"
+
+  return "$rc"
+}

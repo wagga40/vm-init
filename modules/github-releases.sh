@@ -6,7 +6,7 @@
 # --- Generic installer (config-driven) ---
 
 install_github_releases_generic() {
-  local count
+  local count rc=0
   count=$(yq '.github_releases.generic | length' "$CONFIG")
 
   local i
@@ -20,8 +20,12 @@ install_github_releases_generic() {
     sys_arch=$(dpkg --print-architecture)
     arch_value=$(yq ".github_releases.generic[$i].arch_map.${sys_arch} // \"${sys_arch}\"" "$CONFIG")
 
-    download_github_release "$repo" "$asset_pattern" "$binary" "$arch_value"
+    # Keep going after a failure so one unreachable repo does not hide the rest,
+    # but remember it: the module must not report success when a tool is missing.
+    download_github_release "$repo" "$asset_pattern" "$binary" "$arch_value" || rc=1
   done
+
+  return "$rc"
 }
 
 # --- Custom installers (bespoke logic per tool) ---
@@ -339,17 +343,73 @@ install_bat() {
 
 # --- Entry point ---
 
+# Config key -> binary name on PATH. Single source of truth for which custom
+# tools exist and what each one is called once installed (the config key uses
+# underscores; some binaries use dashes).
+declare -A VM_INIT_CUSTOM_BINARIES=(
+  [bandwhich]="bandwhich"
+  [vortix]="vortix"
+  [somo]="somo"
+  [systemd_manager_tui]="systemd-manager-tui"
+  [bat]="bat"
+  [fresh]="fresh"
+)
+
 install_github_releases() {
   require_commands dpkg jq tar || return 1
 
-  install_github_releases_generic
+  local rc=0
+  install_github_releases_generic || rc=1
 
-  local custom_tools=("bandwhich" "vortix" "somo" "systemd_manager_tui" "bat" "fresh")
-  for tool in "${custom_tools[@]}"; do
-    local enabled
+  local tool enabled
+  for tool in "${!VM_INIT_CUSTOM_BINARIES[@]}"; do
     enabled=$(yq ".github_releases.custom.${tool} // false" "$CONFIG")
     if [[ "$enabled" == "true" ]]; then
-      "install_${tool}"
+      "install_${tool}" || rc=1
     fi
   done
+
+  return "$rc"
+}
+
+# Post-install verification: every configured binary is on PATH. Deliberately
+# does not probe versions — _common.sh explains why running arbitrary binaries
+# is unsafe here (TUI tools launch their UI and hang the run).
+verify_github_releases() {
+  local missing=() present=0
+  local count i binary tool enabled
+
+  count=$(yq '.github_releases.generic // [] | length' "$CONFIG")
+  for ((i = 0; i < count; i++)); do
+    binary=$(yq ".github_releases.generic[$i].binary" "$CONFIG")
+    [[ -z "$binary" || "$binary" == "null" ]] && continue
+    if is_installed "$binary"; then
+      present=$((present + 1))
+    else
+      missing+=("$binary")
+    fi
+  done
+
+  for tool in "${!VM_INIT_CUSTOM_BINARIES[@]}"; do
+    enabled=$(yq ".github_releases.custom.${tool} // false" "$CONFIG")
+    [[ "$enabled" == "true" ]] || continue
+    binary="${VM_INIT_CUSTOM_BINARIES[$tool]}"
+    if is_installed "$binary"; then
+      present=$((present + 1))
+    else
+      missing+=("$binary")
+    fi
+  done
+
+  if (( ${#missing[@]} > 0 )); then
+    log_fail "${#missing[@]} binary/binaries not on PATH: ${missing[*]}"
+    return 1
+  fi
+
+  if (( present == 0 )); then
+    log_skip "No GitHub release tools configured"
+    return 0
+  fi
+
+  log_ok "${present} release binary/binaries on PATH"
 }

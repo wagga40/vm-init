@@ -10,7 +10,7 @@ A very opinionated config-driven tool for provisioning Ubuntu machines. It start
 
 | Module | Default | What |
 |--------|---------|------|
-| **apt** | on | Fish shell, `lsd`, editors, build tools, Python base packages, and core CLI utilities (`jq`, `fzf`, `ripgrep`, `fd-find`) |
+| **apt** | on | Fish shell, `lsd`, editors, build tools, Python base packages, core CLI utilities (`jq`, `fzf`, `ripgrep`, `fd-find`), and TUI monitors (`htop`, `btop`, `ncdu`, `duf`) |
 | **shell** | on | Fish as default shell with `zoxide` and a small set of `lsd`/`bat` aliases; Fisher/Tide opt-in |
 | **ufw** | off | Firewall — deny incoming, allow outgoing, permit listed services |
 | **fail2ban** | off | Brute-force defense — bans offending IPs (SSH jail available, UFW-aware) |
@@ -19,7 +19,7 @@ A very opinionated config-driven tool for provisioning Ubuntu machines. It start
 | **docker** | off | Docker engine + compose plugin |
 | **python** | off | uv and pre-commit via pipx by default when enabled |
 | **github-tools** | off | GitHub CLI (`gh`), optionally act (local GitHub Actions) |
-| **github-releases** | off | lazydocker, xplr, task, zoxide, bandwhich, vortix, somo, systemd-manager-tui, bat, fresh |
+| **github-releases** | off | lazydocker, lazygit, xplr, task, zoxide, bandwhich, vortix, somo, systemd-manager-tui, bat, fresh |
 | **yazi** | off | [Yazi](https://github.com/sxyazi/yazi) terminal file manager, from the upstream apt repository |
 
 Each module can be toggled on/off or customized in `vm-init.yml`. Advanced modules are intentionally opt-in so a first run stays simple and predictable.
@@ -102,6 +102,8 @@ sudo ./vm-init.sh --config ./vm-init.yml
 ```bash
 sudo vm-init                          # full run with default config
 sudo vm-init --dry-run                # preview every module's actions, no changes
+sudo vm-init --verify                 # check every enabled module is healthy, change nothing
+sudo vm-init --fail-fast              # stop at the first failed module
 sudo vm-init --list-modules           # table of modules + enabled state (or: -l)
 sudo vm-init --update                 # mode-aware update action or guidance (or: -u)
 vm-init --write-default-config        # write embedded default to ./vm-init.yml (or: -w)
@@ -113,7 +115,26 @@ sudo vm-init --verbose                # stream full command output
 sudo vm-init --log-file /tmp/run.log  # custom log path (default: /var/log/vm-init-<ts>.log)
 ```
 
-By default every run mirrors stdout/stderr to `/var/log/vm-init-<timestamp>.log`. Pass `--no-log` to disable. Every run prints a structured summary at the end (ok / skipped / warned / failed counts), and modules that cannot deliver their requested outcome are reported as failed.
+By default every run mirrors stdout/stderr to `/var/log/vm-init-<timestamp>.log`. Pass `--no-log` to disable. Every run prints a structured summary at the end (ok / skipped / warned / failed counts, plus per-module durations), and modules that cannot deliver their requested outcome are reported as failed. When something fails, the summary names the exact re-run command rather than leaving you to reconstruct it.
+
+Modules that need a follow-up action — a reboot after a kernel change, a re-login for docker group membership — record it, and the summary prints those under **Next steps**.
+
+### Verifying a machine
+
+`sudo vm-init --verify` checks that every enabled module is actually in the state the config asks for, and changes nothing. It is not limited to the minutes after provisioning: run it any time to find drift.
+
+```bash
+sudo vm-init --verify                 # check everything enabled in the config
+sudo vm-init --verify --only docker   # check one module
+```
+
+Each module answers for itself — apt confirms its packages are installed, ufw that the firewall is active with the configured rules, docker that the daemon is reachable and the compose plugin is present, github_releases that every binary is on `PATH`, kernel that the *running* kernel matches `/etc/default/grub` (so a pending reboot shows up as exactly that). Modules also report what the last real run made of them, which distinguishes "never provisioned here" from "provisioned once, then drifted".
+
+`--verify` requires root (`ufw status`, `fail2ban-client`, and `docker info` all do), never installs anything, and writes no log file unless you pass `--log-file`.
+
+### Preflight checks
+
+Before the first module runs, `vm-init` checks architecture, free disk space, and — when a network-touching module is enabled — reachability of `api.github.com`. Only the disk check blocks; set `VM_INIT_MIN_DISK_MB=0` to skip it, or to a different megabyte threshold (default 2048).
 
 Long-running external commands are bounded when GNU `timeout` (or `gtimeout`) is available. Set `VM_INIT_CMD_TIMEOUT=0` to disable that wrapper, or set it to a number of seconds to change the default cap.
 

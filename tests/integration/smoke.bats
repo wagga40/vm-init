@@ -441,3 +441,129 @@ YAML
     shasum -a 256 -c "$(basename "$bundle").sha256"
   fi
 }
+
+# ---------- --verify ----------
+
+@test "--verify and --dry-run are mutually exclusive" {
+  run "$VM_INIT_SH" --verify --dry-run --config "$CONFIG"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"mutually exclusive"* ]]
+}
+
+@test "--verify is listed in --help under Execution" {
+  run "$VM_INIT_SH" --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--verify"* ]]
+  [[ "$output" == *"--fail-fast"* ]]
+}
+
+@test "--verify requires root" {
+  if [ "$(id -u)" -eq 0 ]; then
+    skip "running as root; the non-root refusal cannot be exercised"
+  fi
+  run "$VM_INIT_SH" --verify --config "$CONFIG"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"as root"* ]]
+}
+
+@test "--verify rejects an unknown module in --only just like a normal run" {
+  run "$VM_INIT_SH" --verify --only not-a-module --config "$CONFIG"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Unknown module"* ]]
+}
+
+# ---------- generated module list ----------
+
+@test "--help lists every registered module (no hand-maintained drift)" {
+  run "$VM_INIT_SH" --help
+  [ "$status" -eq 0 ]
+  # Names come from VM_INIT_MODULES; this is the guard against the list going
+  # stale the way the previously hardcoded one did (it had lost yazi).
+  for m in apt ufw fail2ban kernel dns docker python github_tools \
+           github_releases yazi shell; do
+    [[ "$output" == *"$m"* ]] || { echo "module missing from --help: $m"; return 1; }
+  done
+}
+
+# ---------- config validation guards ----------
+
+@test "config validation: warns on an unknown top-level key" {
+  cat > "$TEST_TMPDIR/typo.yml" <<'YAML'
+apt: {enabled: false}
+github_release:
+  enabled: true
+shell: {enabled: false}
+YAML
+  run "$VM_INIT_SH" --dry-run --config "$TEST_TMPDIR/typo.yml"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Unknown top-level config key 'github_release'"* ]]
+}
+
+@test "config validation: rejects an apt package name with whitespace" {
+  cat > "$TEST_TMPDIR/badpkg.yml" <<'YAML'
+apt:
+  enabled: true
+  packages:
+    cli: ["bad name"]
+shell: {enabled: false}
+YAML
+  run "$VM_INIT_SH" --dry-run --config "$TEST_TMPDIR/badpkg.yml"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"invalid package name"* ]]
+}
+
+@test "config validation: reports malformed YAML as such" {
+  printf 'apt:\n  enabled: true\n   packages: [\n' > "$TEST_TMPDIR/broken.yml"
+  run "$VM_INIT_SH" --dry-run --config "$TEST_TMPDIR/broken.yml"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"not valid YAML"* ]]
+}
+
+@test "config validation: rejects a github_releases binary that is a path" {
+  cat > "$TEST_TMPDIR/badbin.yml" <<'YAML'
+apt: {enabled: false}
+shell: {enabled: false}
+github_releases:
+  enabled: true
+  generic:
+    - repo: owner/tool
+      asset_pattern: "tool.tar.gz"
+      binary: ../../etc/passwd
+YAML
+  run "$VM_INIT_SH" --dry-run --config "$TEST_TMPDIR/badbin.yml"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"must be a plain binary name"* ]]
+}
+
+# ---------- errexit propagation guard ----------
+
+@test "module dispatch never runs run_module/verify_module in a condition context" {
+  # Bash suppresses errexit inside every command reached through an if-test,
+  # && or || context. Dispatching as `run_module ... || rc=$?` therefore
+  # disables the `set -e` that run_with_errexit uses to stop a module at its
+  # first failing step, and modules that failed get reported as ok.
+  # See the warning on run_with_errexit in modules/_common.sh.
+  run grep -nE '^[[:space:]]*(run_module|verify_module)[^|&]*(\|\||&&)' "$VM_INIT_SH"
+  [ "$status" -ne 0 ] || {
+    echo "run_module/verify_module dispatched through a condition context:"
+    echo "$output"
+    return 1
+  }
+
+  run grep -nE '^[[:space:]]*(if|while|until)[[:space:]].*\b(run_module|verify_module)\b' "$VM_INIT_SH"
+  [ "$status" -ne 0 ] || {
+    echo "run_module/verify_module used inside a condition:"
+    echo "$output"
+    return 1
+  }
+
+  # And the rc has to reach the caller some other way.
+  grep -q 'VM_INIT_LAST_MODULE_RC' "$VM_INIT_SH"
+}
+
+@test "install_github_releases propagates a failed tool to its exit status" {
+  # A trailing loop that ends cleanly must not mask an earlier failure -- this
+  # is what let a module with two dead downloads report ok.
+  grep -q 'install_github_releases_generic || rc=1' "$VM_INIT_REPO_ROOT/modules/github-releases.sh"
+  grep -q '"install_${tool}" || rc=1' "$VM_INIT_REPO_ROOT/modules/github-releases.sh"
+}

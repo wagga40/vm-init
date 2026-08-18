@@ -341,9 +341,12 @@ export VM_INIT_DRY_RUN=0
 VM_INIT_DO_UPDATE=0
 VM_INIT_LIST_MODULES=0
 VM_INIT_WRITE_DEFAULT_CONFIG=0
+VM_INIT_VERIFY=0
+VM_INIT_FAIL_FAST=0
 VM_INIT_ONLY=""
 VM_INIT_SKIP=""
 LOG_FILE=""
+LOG_FILE_EXPLICIT=0
 
 VM_INIT_START_TS=$(date +%s)
 
@@ -361,6 +364,17 @@ VM_INIT_MODULES=(
   "yazi:yazi.sh:install_yazi"
   "shell:shell.sh:install_shell"
 )
+
+# Comma-separated list of every registered module. Generated rather than
+# written out by hand: the hardcoded list in --help had already drifted out of
+# sync with VM_INIT_MODULES.
+_module_names() {
+  local spec out=""
+  for spec in "${VM_INIT_MODULES[@]}"; do
+    out+="${spec%%:*}, "
+  done
+  echo "${out%, }"
+}
 
 _usage_opt() {
   local flag="$1" desc="$2"
@@ -390,6 +404,8 @@ usage() {
   echo ""
   echo -e "  ${_C_DIM}Execution${_C_RESET}"
   _usage_opt "--dry-run"          "Preview: show each module's actions, no changes"
+  _usage_opt "--verify"           "Check that every enabled module is healthy; change nothing"
+  _usage_opt "--fail-fast"        "Stop at the first failed module instead of continuing"
   _usage_opt "--update, -u"           "Update vm-init (mode-aware behavior)"
   _usage_opt "--force, -f"            "Reinstall/overwrite all tools"
   _usage_opt "--no-upgrade"           "Skip update checks for already-installed tools (default is upgrade-aware)"
@@ -404,7 +420,7 @@ usage() {
   _usage_opt "--help, -h"         "Show this help"
 
   print_help_section "Modules:"
-  echo "  apt, ufw, fail2ban, kernel, dns, docker, python, github_tools, github_releases, shell"
+  echo "  $(_module_names)"
 
   print_help_section "Status legend:"
   print_status_legend
@@ -416,6 +432,7 @@ usage() {
   _usage_example "Rerun only DNS after a failure"                    "sudo ${SCRIPT_NAME} --only dns"
   _usage_example "Skip slow modules for quick first-boot provisioning" "sudo ${SCRIPT_NAME} --skip docker,github_releases"
   _usage_example "Reinstall everything, verbose"                     "sudo ${SCRIPT_NAME} --force --verbose"
+  _usage_example "Check an already-provisioned machine is still healthy" "sudo ${SCRIPT_NAME} --verify"
 
   print_help_section "Recovery:"
   echo -e "  If DNS is broken after provisioning, run:"
@@ -444,6 +461,8 @@ while [[ $# -gt 0 ]]; do
     --only)                   require_option_value "$1" "${2-}"; VM_INIT_ONLY="$2"; shift 2 ;;
     --skip)                   require_option_value "$1" "${2-}"; VM_INIT_SKIP="$2"; shift 2 ;;
     --dry-run)                export VM_INIT_DRY_RUN=1; shift ;;
+    --verify)                 VM_INIT_VERIFY=1; shift ;;
+    --fail-fast)              VM_INIT_FAIL_FAST=1; shift ;;
     --update|-u)             VM_INIT_DO_UPDATE=1; shift ;;
     --list-modules|-l)       VM_INIT_LIST_MODULES=1; shift ;;
     --write-default-config|-w) VM_INIT_WRITE_DEFAULT_CONFIG=1; shift ;;
@@ -451,7 +470,7 @@ while [[ $# -gt 0 ]]; do
     --no-upgrade)             export VM_INIT_NO_UPGRADE=1; shift ;;
     --verbose)                export VM_INIT_VERBOSE=1; shift ;;
     --no-log)                 export VM_INIT_NO_LOG=1; shift ;;
-    --log-file)               require_option_value "$1" "${2-}"; LOG_FILE="$2"; shift 2 ;;
+    --log-file)               require_option_value "$1" "${2-}"; LOG_FILE="$2"; LOG_FILE_EXPLICIT=1; shift 2 ;;
     --version)                echo "vm-init ${VM_INIT_VERSION}"; exit 0 ;;
     --help|-h)                usage; exit 0 ;;
     *)                        echo -e "${_C_RED}${_SYM_FAIL}${_C_RESET} Unknown option: ${_C_BOLD}$1${_C_RESET}" >&2; echo "" >&2; usage >&2; exit 1 ;;
@@ -481,6 +500,11 @@ validate_module_filters() {
 }
 
 if ! validate_module_filters; then
+  exit 1
+fi
+
+if [[ "$VM_INIT_VERIFY" == "1" && "$VM_INIT_DRY_RUN" == "1" ]]; then
+  log_fail "--verify and --dry-run are mutually exclusive (--verify already changes nothing)"
   exit 1
 fi
 
@@ -535,12 +559,16 @@ fi
 
 VM_INIT_EMBEDDED_CONFIG_TMP=""
 VM_INIT_TALLY_FILE=""
+VM_INIT_NOTES_FILE=""
 _vm_init_cleanup() {
   if [[ -n "${VM_INIT_EMBEDDED_CONFIG_TMP:-}" && -f "${VM_INIT_EMBEDDED_CONFIG_TMP}" ]]; then
     rm -f "$VM_INIT_EMBEDDED_CONFIG_TMP"
   fi
   if [[ -n "${VM_INIT_TALLY_FILE:-}" && -f "${VM_INIT_TALLY_FILE}" ]]; then
     rm -f "$VM_INIT_TALLY_FILE"
+  fi
+  if [[ -n "${VM_INIT_NOTES_FILE:-}" && -f "${VM_INIT_NOTES_FILE}" ]]; then
+    rm -f "$VM_INIT_NOTES_FILE"
   fi
 }
 trap _vm_init_cleanup EXIT
@@ -562,11 +590,20 @@ fi
 # per line) accumulated by log_installed/log_upgraded/log_current. Modules
 # run inside subshells (run_with_errexit), so an env-passed file path is
 # the simplest way to aggregate counts across them.
-if [[ "$VM_INIT_DRY_RUN" != "1" ]]; then
+if [[ "$VM_INIT_DRY_RUN" != "1" && "$VM_INIT_VERIFY" != "1" ]]; then
   VM_INIT_TALLY_FILE=$(mktemp 2>/dev/null || true)
   if [[ -n "$VM_INIT_TALLY_FILE" ]]; then
     : > "$VM_INIT_TALLY_FILE"
     export VM_INIT_TALLY_FILE
+  fi
+
+  # Notes file: follow-up actions ("reboot required", "log out and back in")
+  # that modules discover while running. Same env-passed-file mechanism as the
+  # tally, and for the same reason -- modules execute inside subshells.
+  VM_INIT_NOTES_FILE=$(mktemp 2>/dev/null || true)
+  if [[ -n "$VM_INIT_NOTES_FILE" ]]; then
+    : > "$VM_INIT_NOTES_FILE"
+    export VM_INIT_NOTES_FILE
   fi
 fi
 
@@ -646,7 +683,10 @@ fi
 # Logging setup
 # ---------------------------------------------------------------------------
 
-if [[ "$VM_INIT_NO_LOG" != "1" && "$VM_INIT_DRY_RUN" != "1" ]]; then
+# --verify changes nothing, so it should not litter /var/log either. An
+# explicit --log-file still wins.
+if [[ "$VM_INIT_NO_LOG" != "1" && "$VM_INIT_DRY_RUN" != "1" ]] \
+   && [[ "$VM_INIT_VERIFY" != "1" || "$LOG_FILE_EXPLICIT" == "1" ]]; then
   if [[ -z "$LOG_FILE" ]]; then
     LOG_FILE="/var/log/vm-init-$(date +%Y%m%d-%H%M%S).log"
   fi
@@ -691,6 +731,11 @@ if [[ "$VM_INIT_DRY_RUN" == "1" ]]; then
   echo -e "  ${_C_YELLOW}${_C_BOLD}${_SYM_WARN} DRY RUN${_C_RESET} ${_C_YELLOW}— no changes will be made${_C_RESET}"
 fi
 
+if [[ "$VM_INIT_VERIFY" == "1" ]]; then
+  echo ""
+  echo -e "  ${_C_BLUE}${_C_BOLD}${_SYM_INFO} VERIFY${_C_RESET} ${_C_BLUE}— checking existing state, no changes will be made${_C_RESET}"
+fi
+
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -724,6 +769,8 @@ print_kv "Config"   "${_C_CYAN}${CONFIG}${_C_RESET}"
 [[ "$VM_INIT_NO_UPGRADE" == "1" ]] && print_kv "No-upgrade" "${_C_YELLOW}${_C_BOLD}ON${_C_RESET}"
 [[ "$VM_INIT_VERBOSE"    == "1" ]] && print_kv "Verbose"    "${_C_YELLOW}${_C_BOLD}ON${_C_RESET}"
 [[ "$VM_INIT_DRY_RUN"    == "1" ]] && print_kv "Dry-run"    "${_C_YELLOW}${_C_BOLD}ON${_C_RESET}"
+[[ "$VM_INIT_VERIFY"     == "1" ]] && print_kv "Verify"     "${_C_BLUE}${_C_BOLD}ON${_C_RESET}"
+[[ "$VM_INIT_FAIL_FAST"  == "1" ]] && print_kv "Fail-fast"  "${_C_YELLOW}${_C_BOLD}ON${_C_RESET}"
 
 # ---------------------------------------------------------------------------
 # Pre-flight: wait for any background apt/dpkg holder before touching the
@@ -732,7 +779,7 @@ print_kv "Config"   "${_C_CYAN}${CONFIG}${_C_RESET}"
 # silence until the first module reaches its apt step.
 # ---------------------------------------------------------------------------
 
-if [[ "$VM_INIT_DRY_RUN" != "1" ]]; then
+if [[ "$VM_INIT_DRY_RUN" != "1" && "$VM_INIT_VERIFY" != "1" ]]; then
   echo ""
   log_step "Checking for background apt/dpkg activity"
   if ! wait_apt_lock; then
@@ -746,7 +793,7 @@ fi
 # yq bootstrap (skipped in dry-run)
 # ---------------------------------------------------------------------------
 
-if [[ "$VM_INIT_DRY_RUN" != "1" ]]; then
+if [[ "$VM_INIT_DRY_RUN" != "1" && "$VM_INIT_VERIFY" != "1" ]]; then
   if ! command -v yq >/dev/null 2>&1; then
     log_step "Installing yq"
     sys_arch=$(dpkg --print-architecture)
@@ -760,7 +807,7 @@ if [[ "$VM_INIT_DRY_RUN" != "1" ]]; then
   fi
 else
   if ! command -v yq >/dev/null 2>&1; then
-    log_fail "yq not found (dry-run cannot auto-install it). Install yq and retry."
+    log_fail "yq not found (--dry-run and --verify never install anything). Install yq and retry."
     exit 1
   fi
 fi
@@ -774,6 +821,49 @@ validate_config() {
   local val i count
 
   log_step "Validating config"
+
+  # Parse the file once up front. Without this, malformed YAML surfaces as a raw
+  # yq trace from whichever lookup happens to run first.
+  if ! yq '.' "$CONFIG" >/dev/null 2>&1; then
+    log_fail "Config is not valid YAML: ${CONFIG}"
+    yq '.' "$CONFIG" 2>&1 | head -5 >&2
+    return 1
+  fi
+
+  # Unknown top-level keys are the silent failure mode of an opt-in config:
+  # blocks default to enabled:false, so `github_release:` typed for
+  # `github_releases:` disables the module with no diagnostic at all. Warn
+  # rather than fail -- hand-edited configs may legitimately carry extra keys.
+  local known="" key spec
+  for spec in "${VM_INIT_MODULES[@]}"; do
+    known+="${spec%%:*},"
+  done
+  while IFS= read -r key; do
+    [[ -z "$key" ]] && continue
+    if ! [[ ",$known" == *",$key,"* ]]; then
+      log_warn "Unknown top-level config key '${key}' — ignored (typo? valid: ${known%,})"
+    fi
+  done < <(yq -r 'keys | .[]' "$CONFIG" 2>/dev/null)
+
+  # APT package names end up in an unquoted expansion in apt.sh, and a name with
+  # whitespace would silently split into two package requests.
+  while IFS= read -r val; do
+    [[ -z "$val" ]] && continue
+    if ! [[ "$val" =~ ^[a-zA-Z0-9][a-zA-Z0-9+._-]*$ ]]; then
+      log_fail "apt.packages contains an invalid package name: '$val'"
+      errors=$((errors + 1))
+    fi
+  done < <(yq -r '.apt.packages // {} | to_entries | .[].value | .[]' "$CONFIG" 2>/dev/null)
+
+  if [[ "$(yq_get '.python.enabled' false "$CONFIG")" == "true" ]]; then
+    while IFS= read -r val; do
+      [[ -z "$val" ]] && continue
+      if ! [[ "$val" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
+        log_fail "python.tools contains an invalid tool name: '$val'"
+        errors=$((errors + 1))
+      fi
+    done < <(yq -r '.python.tools // [] | .[]' "$CONFIG" 2>/dev/null)
+  fi
 
   if [[ "$(yq_get '.dns.enabled' false "$CONFIG")" == "true" ]]; then
     val=$(yq_get '.dns.server' "" "$CONFIG")
@@ -830,6 +920,13 @@ validate_config() {
           errors=$((errors + 1))
         fi
       done
+      # The binary name is used as a path under /usr/local/bin and as a state
+      # key, so it has to be a bare name.
+      val=$(yq_get ".github_releases.generic[$i].binary" "" "$CONFIG")
+      if [[ -n "$val" && ! "$val" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
+        log_fail "github_releases.generic[$i].binary must be a plain binary name: got '$val'"
+        errors=$((errors + 1))
+      fi
     done
   fi
 
@@ -856,6 +953,76 @@ validate_config() {
 
 if ! validate_config; then
   exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Preflight: environment facts worth knowing before we start changing things.
+# Only the disk check blocks, because it is the one whose failure mode is a
+# half-installed machine. Set VM_INIT_MIN_DISK_MB=0 to disable it.
+# ---------------------------------------------------------------------------
+
+: "${VM_INIT_MIN_DISK_MB:=2048}"
+
+# Free megabytes on the filesystem backing <path>, or empty if it cannot be read.
+_free_mb() {
+  df -Pk "$1" 2>/dev/null | awk 'NR == 2 { print int($4 / 1024) }'
+}
+
+# True when any enabled module reaches out to the network.
+_needs_network() {
+  local section
+  for section in github_releases github_tools dns docker yazi; do
+    [[ "$(yq_get ".${section}.enabled" false "$CONFIG")" == "true" ]] && return 0
+  done
+  return 1
+}
+
+preflight_checks() {
+  log_step "Preflight checks"
+
+  local sys_arch
+  sys_arch=$(dpkg --print-architecture 2>/dev/null || echo unknown)
+  case "$sys_arch" in
+    amd64|arm64) log_ok "Architecture: ${sys_arch}" ;;
+    *) log_warn "Architecture ${sys_arch} is untested — several modules only ship amd64/arm64 builds" ;;
+  esac
+
+  if [[ "${VM_INIT_MIN_DISK_MB}" != "0" ]]; then
+    local path free low=""
+    for path in / /var /usr/local; do
+      [[ -d "$path" ]] || continue
+      free=$(_free_mb "$path")
+      [[ -n "$free" ]] || continue
+      if (( free < VM_INIT_MIN_DISK_MB )); then
+        low+="${path} (${free} MB) "
+      fi
+    done
+    if [[ -n "$low" ]]; then
+      log_fail "Less than ${VM_INIT_MIN_DISK_MB} MB free on: ${low% }"
+      log_info "Free some space, or set VM_INIT_MIN_DISK_MB=0 to skip this check."
+      return 1
+    fi
+    log_ok "Disk space above ${VM_INIT_MIN_DISK_MB} MB on /, /var, /usr/local"
+  fi
+
+  # Warn, do not fail: modules retry, and first-boot DNS on a cloud image is
+  # routinely slow to settle.
+  if _needs_network; then
+    if curl -fsS --max-time 8 -o /dev/null https://api.github.com 2>/dev/null; then
+      log_ok "github.com reachable"
+    else
+      log_warn "Cannot reach api.github.com — modules that download releases may fail"
+    fi
+  fi
+
+  return 0
+}
+
+if [[ "$VM_INIT_DRY_RUN" != "1" && "$VM_INIT_VERIFY" != "1" ]]; then
+  echo ""
+  if ! preflight_checks; then
+    exit 1
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -957,31 +1124,63 @@ dry_run_preview() {
 declare -a VM_INIT_MODULE_NAMES=()
 declare -a VM_INIT_MODULE_STATUS=()
 declare -a VM_INIT_MODULE_DETAIL=()
+declare -a VM_INIT_MODULE_ELAPSED=()
+
+# run_module and verify_module report through this global rather than their exit
+# status. Bash suppresses errexit inside *every* command reached through an
+# if/&&/|| condition, so calling them as `run_module ... || rc=$?` would silently
+# disable the `set -e` that run_with_errexit depends on to stop a module at its
+# first failing step -- see the warning on run_with_errexit in _common.sh.
+VM_INIT_LAST_MODULE_RC=0
 
 record_module_status() {
   VM_INIT_MODULE_NAMES+=("$1")
   VM_INIT_MODULE_STATUS+=("$2")
   VM_INIT_MODULE_DETAIL+=("$3")
+  VM_INIT_MODULE_ELAPSED+=("${4:-}")
 }
 
-run_module() {
-  local section="$1" module_file="$2" entry_func="$3" progress="${4:-}"
-  local enabled rc=0 pre_warn new_warns
+# Load a module's functions unless they are already defined. Single-file bundles
+# pre-define every module, so this guard is what lets one orchestrator serve both
+# layouts. Keyed on the install entry point, which every module defines.
+source_module() {
+  local module_file="$1" entry_func="$2"
+  declare -F "$entry_func" >/dev/null 2>&1 && return 0
+  # shellcheck source=/dev/null
+  source "${MODULES_DIR}/${module_file}"
+}
+
+# Shared prologue for run_module and verify_module: prints the section header and
+# decides whether this module runs at all.
+# Returns 0 to proceed, 1 when the module was skipped and recorded.
+_module_should_run() {
+  local section="$1" progress="$2"
+  local enabled
 
   log_section "${section}" "${progress}"
 
   if module_excluded "$section"; then
     log_skip "excluded by --only/--skip"
     record_module_status "$section" "skipped" "excluded by filter"
-    return 0
+    return 1
   fi
 
   enabled=$(yq_get ".${section}.enabled" false "$CONFIG")
   if [[ "$enabled" != "true" ]]; then
     log_skip "disabled in config"
     record_module_status "$section" "skipped" "disabled in config"
-    return 0
+    return 1
   fi
+
+  return 0
+}
+
+run_module() {
+  local section="$1" module_file="$2" entry_func="$3" progress="${4:-}"
+  local rc=0 pre_warn new_warns start_ts elapsed status
+
+  VM_INIT_LAST_MODULE_RC=0
+  _module_should_run "$section" "$progress" || return 0
 
   if [[ "$VM_INIT_DRY_RUN" == "1" ]]; then
     dry_run_preview "$section"
@@ -990,77 +1189,190 @@ run_module() {
   fi
 
   pre_warn="${VM_INIT_WARN_COUNT:-0}"
+  start_ts=$(date +%s)
 
-  if ! declare -F "$entry_func" >/dev/null 2>&1; then
-    # shellcheck source=/dev/null
-    source "${MODULES_DIR}/${module_file}"
-  fi
+  source_module "$module_file" "$entry_func"
+
   set +e
   run_with_errexit "$entry_func"
   rc=$?
   set -e
 
+  elapsed=$(( $(date +%s) - start_ts ))
   new_warns=$(( ${VM_INIT_WARN_COUNT:-0} - pre_warn ))
 
   if (( rc != 0 )); then
-    record_module_status "$section" "failed" "exit ${rc}"
+    status="failed"
+    record_module_status "$section" "$status" "exit ${rc}" "$elapsed"
   elif (( new_warns > 0 )); then
-    record_module_status "$section" "warned" "${new_warns} warning(s)"
+    status="warned"
+    record_module_status "$section" "$status" "${new_warns} warning(s)" "$elapsed"
   else
-    record_module_status "$section" "ok" ""
+    status="ok"
+    record_module_status "$section" "$status" "" "$elapsed"
   fi
+
+  # Remember the outcome so a later --verify can tell "never provisioned here"
+  # apart from "provisioned once, then drifted".
+  state_set "module.${section}.status" "$status" 2>/dev/null || true
+  state_set "module.${section}.ts" "$(date +%Y-%m-%dT%H:%M:%S)" 2>/dev/null || true
+
+  VM_INIT_LAST_MODULE_RC="$rc"
+  return 0
+}
+
+# Read-only counterpart to run_module: calls the module's verify_<section>
+# function, if it defines one, and records the result in the same vocabulary.
+verify_module() {
+  local section="$1" module_file="$2" entry_func="$3" progress="${4:-}"
+  local rc=0 pre_warn new_warns start_ts elapsed verify_func last_status last_ts
+
+  VM_INIT_LAST_MODULE_RC=0
+  _module_should_run "$section" "$progress" || return 0
+
+  last_status=$(state_get "module.${section}.status" 2>/dev/null || true)
+  last_ts=$(state_get "module.${section}.ts" 2>/dev/null || true)
+  if [[ -n "$last_status" ]]; then
+    log_info "last run: ${last_status}${last_ts:+ (${last_ts})}"
+  else
+    log_info "last run: no record on this machine"
+  fi
+
+  source_module "$module_file" "$entry_func"
+
+  verify_func="verify_${section}"
+  if ! declare -F "$verify_func" >/dev/null 2>&1; then
+    log_skip "no verification available for ${section}"
+    record_module_status "$section" "skipped" "no verify function"
+    return 0
+  fi
+
+  pre_warn="${VM_INIT_WARN_COUNT:-0}"
+  start_ts=$(date +%s)
+
+  set +e
+  run_with_errexit "$verify_func"
+  rc=$?
+  set -e
+
+  elapsed=$(( $(date +%s) - start_ts ))
+  new_warns=$(( ${VM_INIT_WARN_COUNT:-0} - pre_warn ))
+
+  if (( rc != 0 )); then
+    record_module_status "$section" "failed" "verification failed" "$elapsed"
+  elif (( new_warns > 0 )); then
+    record_module_status "$section" "warned" "${new_warns} warning(s)" "$elapsed"
+  else
+    record_module_status "$section" "ok" "verified" "$elapsed"
+  fi
+
+  VM_INIT_LAST_MODULE_RC="$rc"
+  return 0
 }
 
 VM_INIT_TOTAL_MODULES=${#VM_INIT_MODULES[@]}
 VM_INIT_MODULE_INDEX=0
+VM_INIT_ABORTED=0
 for module_spec in "${VM_INIT_MODULES[@]}"; do
   IFS=':' read -r section module_file entry_func <<< "$module_spec"
   VM_INIT_MODULE_INDEX=$((VM_INIT_MODULE_INDEX + 1))
-  run_module "$section" "$module_file" "$entry_func" "${VM_INIT_MODULE_INDEX}/${VM_INIT_TOTAL_MODULES}"
+
+  if (( VM_INIT_ABORTED )); then
+    record_module_status "$section" "skipped" "not reached (--fail-fast)"
+    continue
+  fi
+
+  # Called bare, never through `||` or an `if` test -- see VM_INIT_LAST_MODULE_RC.
+  if [[ "$VM_INIT_VERIFY" == "1" ]]; then
+    verify_module "$section" "$module_file" "$entry_func" \
+      "${VM_INIT_MODULE_INDEX}/${VM_INIT_TOTAL_MODULES}"
+  else
+    run_module "$section" "$module_file" "$entry_func" \
+      "${VM_INIT_MODULE_INDEX}/${VM_INIT_TOTAL_MODULES}"
+  fi
+
+  if (( VM_INIT_LAST_MODULE_RC != 0 )) && [[ "$VM_INIT_FAIL_FAST" == "1" ]]; then
+    VM_INIT_ABORTED=1
+    log_fail "Stopping after ${section} (--fail-fast)"
+  fi
 done
 
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 
+# Render one summary row: symbol, module, optional detail, optional duration.
+_summary_row() {
+  local color="$1" sym="$2" name="$3" detail="$4" secs="$5"
+  local suffix="" dur=""
+  [[ -n "$detail" ]] && suffix="(${detail})"
+  [[ -n "$secs" ]] && dur="$(format_duration "$secs")"
+  # Pad the detail column only when a duration follows it, so rows without one
+  # do not trail whitespace.
+  if [[ -n "$dur" ]]; then
+    printf "  ${color}%-4s${_C_RESET} %-18s ${_C_DIM}%-26s%s${_C_RESET}\n" \
+      "$sym" "$name" "$suffix" "$dur"
+  elif [[ -n "$suffix" ]]; then
+    printf "  ${color}%-4s${_C_RESET} %-18s ${_C_DIM}%s${_C_RESET}\n" \
+      "$sym" "$name" "$suffix"
+  else
+    printf "  ${color}%-4s${_C_RESET} %-18s\n" "$sym" "$name"
+  fi
+}
+
+# Follow-up actions modules recorded via vm_init_note, deduplicated in the order
+# they were first raised.
+print_next_steps() {
+  [[ -n "${VM_INIT_NOTES_FILE:-}" && -s "${VM_INIT_NOTES_FILE}" ]] || return 0
+
+  echo ""
+  echo -e "${_C_BOLD}Next steps${_C_RESET}"
+  local note
+  while IFS= read -r note; do
+    [[ -z "$note" ]] && continue
+    echo -e "  ${_C_CYAN}${_SYM_BULLET}${_C_RESET} ${note}"
+  done < <(awk '!seen[$0]++' "$VM_INIT_NOTES_FILE")
+}
+
 print_summary() {
-  local i name status detail
+  local i name status detail secs
   local ok=0 skip=0 warn=0 fail=0
   local total=${#VM_INIT_MODULE_NAMES[@]}
-  local end_ts elapsed
+  local failed_names=""
+  local end_ts elapsed title
   end_ts=$(date +%s)
   elapsed=$(( end_ts - VM_INIT_START_TS ))
 
+  if [[ "$VM_INIT_VERIFY" == "1" ]]; then
+    title="Verification"
+  else
+    title="Summary"
+  fi
+
   echo ""
-  echo -e "${_C_BOLD}${_C_MAGENTA}━━━ Summary ━━━${_C_RESET}"
+  echo -e "${_C_BOLD}${_C_MAGENTA}━━━ ${title} ━━━${_C_RESET}"
   for ((i = 0; i < total; i++)); do
     name="${VM_INIT_MODULE_NAMES[$i]}"
     status="${VM_INIT_MODULE_STATUS[$i]}"
     detail="${VM_INIT_MODULE_DETAIL[$i]}"
+    secs="${VM_INIT_MODULE_ELAPSED[$i]:-}"
     case "$status" in
       ok)
         ok=$((ok + 1))
-        if [[ -n "$detail" ]]; then
-          printf "  ${_C_GREEN}%-4s${_C_RESET} %-18s ${_C_DIM}(%s)${_C_RESET}\n" \
-            "${_SYM_OK}" "$name" "$detail"
-        else
-          printf "  ${_C_GREEN}%-4s${_C_RESET} %-18s\n" "${_SYM_OK}" "$name"
-        fi
+        _summary_row "${_C_GREEN}" "${_SYM_OK}" "$name" "$detail" "$secs"
         ;;
       skipped)
         skip=$((skip + 1))
-        printf "  ${_C_DIM}%-4s %-18s (%s)${_C_RESET}\n" \
-          "${_SYM_SKIP}" "$name" "$detail"
+        _summary_row "${_C_DIM}" "${_SYM_SKIP}" "$name" "$detail" "$secs"
         ;;
       warned)
         warn=$((warn + 1))
-        printf "  ${_C_YELLOW}%-4s${_C_RESET} %-18s ${_C_YELLOW}%s${_C_RESET}\n" \
-          "${_SYM_WARN}" "$name" "$detail"
+        _summary_row "${_C_YELLOW}" "${_SYM_WARN}" "$name" "$detail" "$secs"
         ;;
       failed)
         fail=$((fail + 1))
-        printf "  ${_C_RED}%-4s${_C_RESET} %-18s ${_C_RED}%s${_C_RESET}\n" \
-          "${_SYM_FAIL}" "$name" "$detail"
+        failed_names+="${name},"
+        _summary_row "${_C_RED}" "${_SYM_FAIL}" "$name" "$detail" "$secs"
         ;;
     esac
   done
@@ -1083,9 +1395,23 @@ print_summary() {
 
   [[ -n "${LOG_FILE:-}" ]] && printf "  ${_C_DIM}Log:${_C_RESET} ${_C_CYAN}%s${_C_RESET}\n" "${LOG_FILE}"
 
+  # Print notes before the pass/fail verdict: a pending reboot does not stop
+  # mattering because some other module had a bad day.
+  if [[ "$VM_INIT_VERIFY" != "1" ]]; then
+    print_next_steps
+  fi
+
   if (( fail > 0 )); then
     echo ""
-    echo -e "  ${_C_RED}${_C_BOLD}${_SYM_FAIL} Some modules failed.${_C_RESET} Review output above or in the log file."
+    if [[ "$VM_INIT_VERIFY" == "1" ]]; then
+      echo -e "  ${_C_RED}${_C_BOLD}${_SYM_FAIL} Some modules did not verify.${_C_RESET}"
+      echo -e "  ${_C_DIM}Re-provision just those:${_C_RESET}  ${_C_CYAN}sudo ${SCRIPT_NAME} --only ${failed_names%,}${_C_RESET}"
+    else
+      echo -e "  ${_C_RED}${_C_BOLD}${_SYM_FAIL} Some modules failed.${_C_RESET} Review output above or in the log file."
+      # Name the exact re-run rather than leaving the reader to reconstruct it.
+      echo -e "  ${_C_DIM}Re-run just what failed:${_C_RESET}  ${_C_CYAN}sudo ${SCRIPT_NAME} --only ${failed_names%,} --verbose${_C_RESET}"
+      echo -e "  ${_C_DIM}Check current state:${_C_RESET}      ${_C_CYAN}sudo ${SCRIPT_NAME} --verify${_C_RESET}"
+    fi
     return 1
   fi
 
@@ -1100,9 +1426,15 @@ print_summary() {
     echo -e "  ${_C_YELLOW}${_SYM_WARN} Completed with warnings.${_C_RESET} Review output for details."
   fi
 
+  if [[ "$VM_INIT_VERIFY" == "1" ]]; then
+    echo ""
+    log_done "Verification complete."
+    return 0
+  fi
+
   echo ""
   log_done "Setup complete."
-  echo -e "  Log out and back in, or run: ${_C_CYAN}${_C_BOLD}exec fish${_C_RESET}"
+  echo -e "  Verify at any time with: ${_C_CYAN}${_C_BOLD}sudo ${SCRIPT_NAME} --verify${_C_RESET}"
   return 0
 }
 

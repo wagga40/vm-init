@@ -494,3 +494,95 @@ EOF
   [[ "$output" == *"Missing required command(s)"* ]]
   [[ "$output" == *"pipx"* ]]
 }
+
+# ---------- vm_init_note ----------
+
+@test "vm_init_note: appends to the notes file when one is configured" {
+  export VM_INIT_NOTES_FILE="$TEST_TMPDIR/notes"
+  : > "$VM_INIT_NOTES_FILE"
+
+  vm_init_note "Reboot required"
+  vm_init_note "Log out and back in"
+
+  run cat "$VM_INIT_NOTES_FILE"
+  [[ "$output" == *"Reboot required"* ]]
+  [[ "$output" == *"Log out and back in"* ]]
+}
+
+@test "vm_init_note: is a no-op when no notes file is configured" {
+  unset VM_INIT_NOTES_FILE
+  run vm_init_note "should vanish"
+  [ "$status" -eq 0 ]
+}
+
+@test "vm_init_note: duplicates survive in the file and dedupe at render time" {
+  export VM_INIT_NOTES_FILE="$TEST_TMPDIR/notes"
+  : > "$VM_INIT_NOTES_FILE"
+
+  vm_init_note "same note"
+  vm_init_note "same note"
+
+  # The file keeps both; the summary's awk pass is what collapses them.
+  [ "$(wc -l < "$VM_INIT_NOTES_FILE")" -eq 2 ]
+  [ "$(awk '!seen[$0]++' "$VM_INIT_NOTES_FILE" | wc -l)" -eq 1 ]
+}
+
+# ---------- apt_available ----------
+
+@test "apt_available: true when apt-cache reports a candidate" {
+  mkdir -p "$TEST_TMPDIR/bin"
+  cat > "$TEST_TMPDIR/bin/apt-cache" <<'EOF'
+#!/usr/bin/env bash
+printf 'htop:\n  Installed: (none)\n  Candidate: 3.0.5-7build2\n'
+EOF
+  chmod +x "$TEST_TMPDIR/bin/apt-cache"
+  export PATH="$TEST_TMPDIR/bin:$PATH"
+
+  run apt_available htop
+  [ "$status" -eq 0 ]
+}
+
+@test "apt_available: false when the candidate is (none) and nothing provides it" {
+  mkdir -p "$TEST_TMPDIR/bin"
+  cat > "$TEST_TMPDIR/bin/apt-cache" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  policy)   printf 'duf:\n  Installed: (none)\n  Candidate: (none)\n' ;;
+  showpkg)  printf 'Package: duf\nVersions: \n\nReverse Depends: \nDependencies: \nProvides: \nReverse Provides: \n' ;;
+esac
+EOF
+  chmod +x "$TEST_TMPDIR/bin/apt-cache"
+  export PATH="$TEST_TMPDIR/bin:$PATH"
+
+  run apt_available duf
+  [ "$status" -ne 0 ]
+}
+
+@test "apt_available: false for a package apt-cache does not know at all" {
+  mkdir -p "$TEST_TMPDIR/bin"
+  cat > "$TEST_TMPDIR/bin/apt-cache" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "$TEST_TMPDIR/bin/apt-cache"
+  export PATH="$TEST_TMPDIR/bin:$PATH"
+
+  run apt_available totally-not-a-package
+  [ "$status" -ne 0 ]
+}
+
+@test "apt_available: true for a virtual package with a real provider" {
+  mkdir -p "$TEST_TMPDIR/bin"
+  cat > "$TEST_TMPDIR/bin/apt-cache" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  policy)  printf 'editor:\n  Installed: (none)\n  Candidate: (none)\n' ;;
+  showpkg) printf 'Package: editor\nVersions: \n\nReverse Provides: \nvim 2:9.0\n' ;;
+esac
+EOF
+  chmod +x "$TEST_TMPDIR/bin/apt-cache"
+  export PATH="$TEST_TMPDIR/bin:$PATH"
+
+  run apt_available editor
+  [ "$status" -eq 0 ]
+}

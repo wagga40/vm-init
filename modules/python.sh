@@ -59,3 +59,30 @@ install_python() {
     fi
   done <<< "$tools"
 }
+
+# Post-install verification: every configured pipx tool resolves on PATH.
+verify_python() {
+  local tools tool missing=() present=0
+  tools=$(yq '.python.tools[]?' "$CONFIG" 2>/dev/null)
+
+  if [[ -z "$tools" ]]; then
+    log_skip "No Python tools configured"
+    return 0
+  fi
+
+  while IFS= read -r tool; do
+    [[ -z "$tool" ]] && continue
+    if is_installed "$tool"; then
+      present=$((present + 1))
+    else
+      missing+=("$tool")
+    fi
+  done <<< "$tools"
+
+  if (( ${#missing[@]} > 0 )); then
+    log_fail "${#missing[@]} pipx tool(s) not on PATH: ${missing[*]}"
+    return 1
+  fi
+
+  log_ok "${present} pipx tool(s) on PATH"
+}

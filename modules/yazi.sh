@@ -29,3 +29,27 @@ https://yazi-rs.github.io/builds/ stable main" \
 
   apt_install_with_report yazi
 }
+
+# Post-install verification: the apt repository is wired up and yazi is present.
+verify_yazi() {
+  require_commands dpkg-query || return 1
+
+  local rc=0
+
+  # A sources entry pointing at a missing keyring breaks every later
+  # `apt-get update`, so check both halves, not just the binary.
+  if [[ -f "$YAZI_LIST" && -s "$YAZI_KEYRING" ]]; then
+    log_ok "yazi apt repository configured"
+  else
+    log_warn "yazi apt repository incomplete (list: ${YAZI_LIST}, keyring: ${YAZI_KEYRING})"
+  fi
+
+  if dpkg-query -W -f='${Status}' yazi 2>/dev/null | grep -q '^install ok installed$'; then
+    log_ok "yazi installed ($(dpkg-query -W -f='${Version}' yazi 2>/dev/null))"
+  else
+    log_fail "yazi is not installed"
+    rc=1
+  fi
+
+  return "$rc"
+}
