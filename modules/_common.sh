@@ -368,6 +368,7 @@ _timeout_bin() {
 run_maybe_timeout() {
   local cmd="$1"
   local timeout_bin=""
+  local timeout_args=(--preserve-status)
 
   if [[ "${VM_INIT_CMD_TIMEOUT:-0}" != "0" ]] \
       && ! declare -F "$cmd" >/dev/null 2>&1; then
@@ -375,7 +376,11 @@ run_maybe_timeout() {
   fi
 
   if [[ -n "$timeout_bin" ]]; then
-    "$timeout_bin" --preserve-status "$VM_INIT_CMD_TIMEOUT" "$@"
+    # A separate process group can stop APT with SIGTTIN/SIGTTOU when it
+    # accesses the terminal, even with noninteractive package settings.
+    # Keep process-group timeouts for commands without terminal streams.
+    if [[ -t 0 || -t 1 || -t 2 ]]; then timeout_args+=(--foreground); fi
+    "$timeout_bin" "${timeout_args[@]}" "$VM_INIT_CMD_TIMEOUT" "$@"
   else
     "$@"
   fi
