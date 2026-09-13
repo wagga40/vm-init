@@ -102,11 +102,11 @@ jobs:
             echo ""
             echo '```bash'
             echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/scripts/install.sh | sudo bash"
-            echo "sudo vm-init setup"
+            echo "sudo vm-init"
             echo "sudo vm-init status"
             echo '```'
             echo ""
-            echo "The installer prepares configuration tools and verifies the release tarball."
+            echo "The installer verifies the release tarball. The first vm-init run prepares tools, guides configuration, and applies it."
             echo "Standalone bundles also include offline recovery: sudo vm-init repair dns."
             echo "See README.md for checksum-verified single-file installation, account selection, and automation."
             echo ""

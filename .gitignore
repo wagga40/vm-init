@@ -29,8 +29,12 @@ env/
 .vscode/
 .idea/
 
+# Local design and review notes
+docs/superpowers/
+docs/reviews/
+docs/releases/
+
 # Misc 
-docs/
 .cursor/
 .cursorrules/
 CLAUDE.md

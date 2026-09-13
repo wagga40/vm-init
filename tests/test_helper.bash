@@ -31,6 +31,8 @@ load_common() {
 make_test_tmpdir() {
   TEST_TMPDIR=$(mktemp -d)
   export TEST_TMPDIR
+  export VM_INIT_PREFIX="$TEST_TMPDIR/installation"
+  export VM_INIT_BIN_DIR="$TEST_TMPDIR/commands"
   export VM_INIT_STATE_DIR="$TEST_TMPDIR/state"
   export VM_INIT_STATE_FILE="$VM_INIT_STATE_DIR/state"
   export VM_INIT_RECONCILE_REPORT="$TEST_TMPDIR/configuration.jsonl"

@@ -12,7 +12,7 @@ bootstrap_config_tools() {
   fi
   if (( ${#missing[@]} > 0 || needs_yq )); then
     if [[ $EUID -ne 0 ]]; then
-      log_fail 'Setup tools are missing. Run: sudo vm-init prepare'
+      log_fail 'Setup tools are missing. Run: sudo vm-init'
       return 1
     fi
     log_step "Preparing configuration tools: ${missing[*]}"
@@ -31,19 +31,20 @@ install_config_yq() (
   case "$(uname -m)" in
     x86_64) arch=amd64; checksum=a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7 ;;
     aarch64|arm64) arch=arm64; checksum=0e7e1524f68d91b3ff9b089872d185940ab0fa020a5a9052046ef10547023156 ;;
-    *) log_fail 'Install mikefarah yq v4 or Python yq for this architecture, then retry prepare'; return 1 ;;
+    *) log_fail 'Install mikefarah yq v4 or Python yq for this architecture, then retry vm-init'; return 1 ;;
   esac
   temporary=$(mktemp -d) || return 1
   trap 'rm -rf "$temporary"' EXIT
   log_step 'Installing verified yq v4.44.3'
   download_file "https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_${arch}" "$temporary/yq" || return 1
   verify_sha256 "$temporary/yq" "$checksum" || return 1
-  install -m 0755 "$temporary/yq" /usr/local/bin/yq
+  install -d -m 0755 "$VM_INIT_PREFIX/bin" || return 1
+  install -m 0755 "$temporary/yq" "$VM_INIT_PREFIX/bin/yq"
 )
 
 check_config_tools() {
   if ! require_commands yq jq python3; then
-    log_info 'Prepare configuration tools once with: sudo vm-init prepare'
+    log_info 'Run sudo vm-init to prepare missing tools automatically (or use sudo vm-init prepare for preview-only preparation).'
     return 1
   fi
   local probe
@@ -126,7 +127,8 @@ validate_config_schema() {
 }
 
 resolve_target_users() {
-  local selection="${VM_INIT_USER_OPTION:-}" user accounts count
+  local selection="${VM_INIT_USER_OPTION:-}" user
+  local selected_accounts=()
   if [[ "${VM_INIT_ALL_USERS:-0}" == 1 ]]; then
     selection="root $(human_users | cut -d: -f1 | paste -sd' ' -)"
   elif [[ -z "$selection" ]]; then
@@ -135,21 +137,21 @@ resolve_target_users() {
   if [[ -z "$selection" ]]; then
     if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != root ]]; then
       selection="$SUDO_USER"
-    elif [[ $EUID -ne 0 ]]; then
+    else
       selection=$(id -un)
-    elif command -v getent >/dev/null 2>&1; then
-      accounts=$(human_users)
-      count=$(printf '%s\n' "$accounts" | awk 'NF { n++ } END { print n+0 }')
-      if [[ "$count" == 1 ]]; then selection="${accounts%%:*}"; fi
     fi
   fi
   if [[ -z "$selection" ]]; then
     log_fail "Choose an account with --user <name>, users: [name] in config, or --all-users."
     return 1
   fi
+  if [[ "$selection" == *$'\n'* || "$selection" == *$'\r'* ]]; then
+    log_fail 'Account names must not contain line breaks'; return 1
+  fi
   selection="${selection//,/ }"
+  read -ra selected_accounts <<< "$selection"
   VM_INIT_TARGET_USERS=""
-  for user in $selection; do
+  for user in "${selected_accounts[@]}"; do
     if [[ ! "$user" =~ ^[a-z_][a-zA-Z0-9_-]*\$?$ ]]; then
       log_fail "Invalid account name: ${user}"
       return 1

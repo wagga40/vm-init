@@ -11,7 +11,7 @@ VM_INIT_REPO="wagga40/vm-init"
 
 : "${VM_INIT_VERSION:=latest}"
 : "${VM_INIT_PREFIX:=/opt/vm-init}"
-: "${VM_INIT_BIN_DIR:=/usr/local/sbin}"
+: "${VM_INIT_BIN_DIR:=/usr/local/bin}"
 : "${VM_INIT_NO_SYMLINK:=0}"
 
 # ---------- Minimal UI (mirrors modules/_common.sh for visual consistency) ----------
@@ -78,13 +78,13 @@ usage() {
   _section "Options:"
   _opt "--version <tag>"       "Release tag to install. Default: latest"
   _opt "--prefix <dir>"        "Install directory (managed default: /opt/vm-init)"
-  _opt "--no-symlink"          "Skip creating symlinks under /usr/local/sbin"
+  _opt "--no-symlink"          "Skip creating symlinks under /usr/local/bin"
   _opt "--help, -h"            "Show this help"
 
   _section "Environment:"
   _env "VM_INIT_VERSION"      "Release tag (default: latest)"
   _env "VM_INIT_PREFIX"       "Install directory (default: /opt/vm-init)"
-  _env "VM_INIT_BIN_DIR"      "Symlink directory (default: /usr/local/sbin)"
+  _env "VM_INIT_BIN_DIR"      "Symlink directory (default: /usr/local/bin)"
   _env "VM_INIT_NO_SYMLINK"   "Set to 1 to skip symlinks"
 
   _section "Examples:"
@@ -96,7 +96,7 @@ usage() {
 require_option_value() {
   local flag="$1"
   local value="${2-}"
-  if [[ -z "$value" || "$value" == --* ]]; then
+  if [[ -z "$value" || "$value" == -* ]]; then
     log_fail "Missing value for ${flag}"
     echo "" >&2
     usage >&2
@@ -130,17 +130,6 @@ case "$VM_INIT_PREFIX" in
   /*) ;;
   *) err '--prefix must be an absolute path' ;;
 esac
-if [[ -d "$VM_INIT_PREFIX" && ! -f "$VM_INIT_PREFIX/vm-init.sh" ]]; then
-  err "Refusing to replace a directory that is not a vm-init installation: $VM_INIT_PREFIX"
-fi
-# Share the mutation lock with vm-init --update and the preparation child.
-VM_INIT_STATE_DIR="${VM_INIT_STATE_DIR:-/var/lib/vm-init}"
-mkdir -p "$VM_INIT_STATE_DIR"
-if [[ -z "${VM_INIT_LOCK_FD:-}" ]] || ! flock -n "$VM_INIT_LOCK_FD" 2>/dev/null; then
-  exec {VM_INIT_LOCK_FD}>"$VM_INIT_STATE_DIR/run.lock"
-  flock -n "$VM_INIT_LOCK_FD" || err 'Another vm-init change is running; retry when it finishes'
-fi
-export VM_INIT_LOCK_FD VM_INIT_STATE_DIR
 
 for bin in curl tar sha256sum; do
   if ! command -v "$bin" >/dev/null 2>&1; then
@@ -168,14 +157,7 @@ SHA_URL="${TARBALL_URL}.sha256"
 
 TMP=$(mktemp -d)
 STAGE=""
-BACKUP=""
-SWAPPED=0
 installer_cleanup() {
-  local rc=$?
-  if (( rc != 0 && SWAPPED == 1 )); then
-    rm -rf "$VM_INIT_PREFIX"
-    if [[ -n "$BACKUP" ]]; then mv "$BACKUP" "$VM_INIT_PREFIX"; fi
-  fi
   [[ -z "$STAGE" ]] || rm -rf "$STAGE"
   rm -rf "$TMP"
 }
@@ -203,70 +185,27 @@ log_step "Verifying checksum"
 log_ok "Checksum matches"
 
 log_step "Installing to ${VM_INIT_PREFIX}"
-mkdir -p "$(dirname "$VM_INIT_PREFIX")"
-
-# Extract into a staging dir (stripping the versioned top-level folder the
-# tarball carries internally) so the swap below is atomic-ish.
-STAGE=$(mktemp -d "$(dirname "$VM_INIT_PREFIX")/.vm-init.stage.XXXXXX")
-tar xzf "$TMP/$TARBALL_NAME" -C "$STAGE" --strip-components=1
-[[ -f "$STAGE/vm-init.sh" && -f "$STAGE/modules/_common.sh" ]] || err 'Release archive is incomplete'
-bash -n "$STAGE/vm-init.sh" || err 'Release script is not valid Bash'
-# Prepare prerequisites before replacing a working installation.
-if [[ -f "$STAGE/modules/_config.sh" ]]; then
-  bash "$STAGE/vm-init.sh" prepare || err 'Configuration tools could not be prepared'
-else
-  log_warn 'This older release has no prepare command; follow its README for configuration prerequisites.'
-fi
-chmod 0755 "$STAGE"
-printf '%s\n%s\n' "$VM_INIT_BIN_DIR" "$VM_INIT_NO_SYMLINK" > "$STAGE/.vm-init-managed"
-
-if [[ -d "$VM_INIT_PREFIX" ]]; then
-  BACKUP=$(mktemp -d "$(dirname "$VM_INIT_PREFIX")/.vm-init.backup.XXXXXX")
-  rmdir "$BACKUP"
-  mv "$VM_INIT_PREFIX" "$BACKUP"
-fi
-SWAPPED=1
-mv "$STAGE" "$VM_INIT_PREFIX"
+# Load shared installation helpers only from the checksum-verified archive.
+mkdir -p "$TMP/release"
+tar xzf "$TMP/$TARBALL_NAME" -C "$TMP/release" --strip-components=1
+[[ -f "$TMP/release/vm-init.sh" && -f "$TMP/release/modules/_layout.sh" ]] \
+  || err 'Release archive is incomplete or predates the supported installation layout'
+bash -n "$TMP/release/vm-init.sh" || err 'Release script is not valid Bash'
+# shellcheck disable=SC1091 # loaded from the verified release
+source "$TMP/release/modules/_common.sh"
+# shellcheck disable=SC1091
+source "$TMP/release/modules/_safety.sh"
+validate_install_prefix && acquire_run_lock && migrate_layout && preserve_legacy_config || exit 1
+install -d -m 0755 "$VM_INIT_PREFIX"
+STAGE=$(mktemp -d "$VM_INIT_PREFIX/.app-stage.XXXXXX")
+cp -a "$TMP/release/." "$STAGE/"
+install_app "$STAGE" vm-init.sh || err 'Installation failed; the previous application was retained'
 STAGE=""
-chmod +x "$VM_INIT_PREFIX/vm-init.sh"
-[[ -f "$VM_INIT_PREFIX/scripts/install.sh" ]] && chmod +x "$VM_INIT_PREFIX/scripts/install.sh"
-[[ -d "$VM_INIT_PREFIX/scripts"    ]] && chmod +x "$VM_INIT_PREFIX"/scripts/*.sh
-[[ -f "$VM_INIT_PREFIX/modules/recover-dns.sh" ]] && chmod +x "$VM_INIT_PREFIX/modules/recover-dns.sh"
-
-if [[ "$VM_INIT_NO_SYMLINK" != "1" ]]; then
-  log_step "Creating symlinks under ${VM_INIT_BIN_DIR}"
-  mkdir -p "$VM_INIT_BIN_DIR"
-  ln -sf "$VM_INIT_PREFIX/vm-init.sh" "$VM_INIT_BIN_DIR/vm-init"
-  if [[ -f "$VM_INIT_PREFIX/modules/recover-dns.sh" ]]; then
-    ln -sf "$VM_INIT_PREFIX/modules/recover-dns.sh" "$VM_INIT_BIN_DIR/vm-init-recover-dns"
-  fi
-fi
-
-[[ -z "$BACKUP" ]] || rm -rf "$BACKUP"
-SWAPPED=0
-
-installed_version=""
-if [[ -f "$VM_INIT_PREFIX/VERSION" ]]; then
-  installed_version=$(tr -d '[:space:]' < "$VM_INIT_PREFIX/VERSION")
-fi
-
-echo ""
-if [[ -n "$installed_version" ]]; then
-  echo -e "${_C_BRIGHT_GREEN}${_C_BOLD}${_SYM_OK}${_C_RESET} ${_C_BOLD}vm-init ${installed_version} installed${_C_RESET} at ${_C_CYAN}${VM_INIT_PREFIX}${_C_RESET}"
+link_legacy_app || exit 1
+log_ok "vm-init installed at $VM_INIT_PREFIX"
+if [[ "$VM_INIT_NO_SYMLINK" == 1 ]]; then
+  printf 'Run: sudo %q\n' "$VM_INIT_PREFIX/bin/vm-init"
 else
-  echo -e "${_C_BRIGHT_GREEN}${_C_BOLD}${_SYM_OK}${_C_RESET} ${_C_BOLD}vm-init installed${_C_RESET} at ${_C_CYAN}${VM_INIT_PREFIX}${_C_RESET}"
+  printf 'Run: sudo vm-init\n'
 fi
-echo ""
-echo -e "${_C_BOLD}Next steps${_C_RESET}"
-if [[ ! -f "$VM_INIT_PREFIX/modules/_config.sh" ]]; then
-  printf '  See %s/README.md for usage of this release.\n' "$VM_INIT_PREFIX"
-elif [[ "$VM_INIT_NO_SYMLINK" != "1" ]]; then
-  printf "  ${_C_DIM}%-18s${_C_RESET} ${_C_CYAN}%s${_C_RESET}\n" "Run:"          "sudo vm-init setup"
-  printf "  ${_C_DIM}%-18s${_C_RESET} ${_C_CYAN}%s${_C_RESET}\n" "DNS recovery:" "sudo vm-init repair dns --with-fallback"
-else
-  printf "  ${_C_DIM}%-18s${_C_RESET} ${_C_CYAN}%s${_C_RESET}\n" "Run:" "sudo ${VM_INIT_PREFIX}/vm-init.sh setup"
-fi
-printf "  ${_C_DIM}%-18s${_C_RESET} %s\n" "Custom config:" "Use --config, or place vm-init.yml in cwd (/etc/vm-init/vm-init.yml still wins)"
-if [[ "$VM_INIT_NO_SYMLINK" != "1" ]]; then
-  printf "  ${_C_DIM}%-18s${_C_RESET} ${_C_CYAN}%s${_C_RESET}\n" "Preview first:" "vm-init plan"
-fi
+printf 'The first run prepares configuration tools, guides configuration, and applies it.\n'

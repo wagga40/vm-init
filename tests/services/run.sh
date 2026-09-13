@@ -56,20 +56,20 @@ ufw status | grep -q '195.178.110.30'
 # Exercise confirmation and the real systemd rollback timer.
 SSH_CONNECTION='198.51.100.1 4000 192.0.2.1 22' \
   ./vm-init.sh apply --config service-test.yml --only ufw --no-log
-[[ ! -f /var/lib/vm-init/firewall-pending ]]
+[[ ! -f /opt/vm-init/state/firewall-pending ]]
 sed 's/51820\/udp]/51820\/udp, 8081\/tcp]/' service-test.yml > confirmation-test.yml
 SSH_CONNECTION='198.51.100.1 4000 192.0.2.1 22' \
   ./vm-init.sh apply --config confirmation-test.yml --only ufw --no-log
 SSH_CONNECTION='198.51.100.1 4001 192.0.2.1 22' ./vm-init.sh confirm-firewall
-[[ ! -f /var/lib/vm-init/firewall-pending ]]
+[[ ! -f /opt/vm-init/state/firewall-pending ]]
 sed 's/51820\/udp]/51820\/udp, 8080\/tcp]/' service-test.yml > rollback-test.yml
 SSH_CONNECTION='198.51.100.1 4002 192.0.2.1 22' VM_INIT_FIREWALL_CONFIRM_SECONDS=5 \
   ./vm-init.sh apply --config rollback-test.yml --only ufw --no-log
 for _ in {1..20}; do
-  [[ -f /var/lib/vm-init/firewall-pending ]] || break
+  [[ -f /opt/vm-init/state/firewall-pending ]] || break
   sleep 1
 done
-[[ ! -f /var/lib/vm-init/firewall-pending ]]
+[[ ! -f /opt/vm-init/state/firewall-pending ]]
 if ufw status | grep -q '8080/tcp'; then echo 'Firewall timer did not restore previous rules' >&2; exit 1; fi
 ufw status | grep -q '195.178.110.30'
 

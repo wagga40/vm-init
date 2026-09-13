@@ -34,6 +34,7 @@ COMMON_SH="${REPO_ROOT}/modules/_common.sh"
 ORCHESTRATOR="${REPO_ROOT}/vm-init.sh"
 DEFAULT_YML="${REPO_ROOT}/vm-init.yml"
 MODULES=(
+  "${REPO_ROOT}/modules/_cli.sh"
   "${REPO_ROOT}/modules/_config.sh"
   "${REPO_ROOT}/modules/_safety.sh"
   "${REPO_ROOT}/modules/_reconcile.sh"
@@ -103,6 +104,9 @@ export VM_INIT_BUNDLED=1
 export VM_INIT_BUNDLED_VERSION="${VERSION}"
 HEADER
 
+  section_header "modules/_layout.sh"
+  strip_shebang "${REPO_ROOT}/modules/_layout.sh"
+
   section_header "modules/_common.sh"
   strip_shebang "$COMMON_SH"
 
@@ -156,10 +160,10 @@ echo ""
 echo "To install on a target machine:"
 echo "  curl -fsSL <url>/${NAME}-${VERSION} -o ./vm-init"
 echo "  # Verify the published sha256 before installation"
-echo "  sudo install -m 0755 ./vm-init /usr/local/sbin/vm-init"
-echo "  sudo vm-init prepare"
-echo "  sudo vm-init --dry-run                # uses embedded default"
-echo "  sudo vm-init setup"
+echo "  chmod +x ./vm-init"
+echo "  sudo ./vm-init                       # installs itself and guides configuration"
+echo "  sudo vm-init plan"
+echo "  sudo vm-init"
 echo ""
 echo "To customize the config before running:"
 echo "  vm-init --write-default-config        # writes ./vm-init.yml (no sudo)"

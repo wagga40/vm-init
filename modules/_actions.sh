@@ -33,53 +33,60 @@ load_failed_run() {
 
 setup_wizard() {
   check_config_tools || return 1
-  local account="${VM_INIT_USER_OPTION:-${SUDO_USER:-}}" features="${VM_INIT_FEATURES:-}" answer json users
+  local account features="${VM_INIT_FEATURES:-}" answer json users original="$CONFIG" feature template=false
   local choices=()
-  if [[ "${VM_INIT_ALL_USERS:-0}" == 1 ]]; then
-    account="root$(human_users | cut -d: -f1 | while read -r user; do printf ',%s' "$user"; done)"
+  case "$VM_INIT_CONFIG_ORIGIN" in 'shipped default'|'embedded default') template=true ;; esac
+  VM_INIT_SETUP_DEST="$VM_INIT_CONFIG_DIR/vm-init.yml"
+  [[ "$CONFIG_EXPLICIT" != 1 ]] || VM_INIT_SETUP_DEST="$original"
+  if [[ -f "$original" ]]; then
+    validate_config_schema || return 1
+    json="$VM_INIT_CONFIG_JSON"
+  else
+    json=$(_emit_default_config | yq -r '@json') || return 1
   fi
-  if [[ "$account" == root && -z "${VM_INIT_USER_OPTION:-}" && "${VM_INIT_ALL_USERS:-0}" != 1 ]]; then account=""; fi
-  if [[ -z "$account" && $EUID -ne 0 ]]; then account=$(id -un); fi
+  VM_INIT_SETUP_TMP=$(mktemp) || return 1
+  printf '%s\n' "$json" > "$VM_INIT_SETUP_TMP"
+  CONFIG="$VM_INIT_SETUP_TMP"
+  resolve_target_users || return 1
+  account="${VM_INIT_TARGET_USERS// /,}"
+  if [[ -z "$features" ]]; then
+    features=$(jq -r '[if .shell.enabled then "shell" else empty end,
+      if .docker.enabled then "docker" else empty end,
+      if .python.enabled then "python" else empty end,
+      if .github_releases.enabled then "tools" else empty end] | join(",")' <<< "$json") || return 1
+  fi
   if [[ "${VM_INIT_YES:-0}" != 1 && "${VM_INIT_DRY_RUN:-0}" != 1 ]]; then
-    if [[ ! -t 0 ]]; then
-      log_fail 'Interactive setup needs a terminal. For automation use setup --yes --user <name> --features shell,docker.'
-      return 1
-    fi
-    printf 'Set up this machine\n\n'
-    printf 'Account%s: ' "${account:+ [$account]}"
+    printf 'Set up this machine\n\nAccounts (comma-separated) [%s]: ' "$account"
     read -r answer || return 1
     account="${answer:-$account}"
-    printf 'Features: shell, docker, python, tools\nChoose a comma-separated list [shell]: '
+    printf 'Features: shell, docker, python, tools (or none)\nChoose a comma-separated list [%s]: ' "${features:-none}"
     read -r answer || return 1
-    features="${answer:-shell}"
+    features="${answer:-$features}"
   fi
-  [[ -n "$account" ]] || { log_fail 'Choose the target account with --user <name>'; return 1; }
-  features="${features:-shell}"
-  case ",$features," in *,,*) log_fail 'Feature names must not be empty'; return 1 ;; esac
-  local feature
-  IFS=',' read -ra choices <<< "$features"
-  for feature in "${choices[@]}"; do
-    case "$feature" in shell|docker|python|tools) ;; *) log_fail "Unknown feature: $feature (use shell,docker,python,tools)"; return 1 ;; esac
-  done
-  VM_INIT_USER_OPTION="$account"
-  users=$(printf '%s' "$account" | jq -R 'split(",")')
-  json=$(_emit_default_config | yq -r '@json') || return 1
-  VM_INIT_SETUP_TMP=$(mktemp) || return 1
-  jq --argjson users "$users" --arg features ",$features," '
+  [[ "$features" != none ]] || features=''
+  if [[ -n "$features" ]]; then
+    case ",$features," in *,,*) log_fail 'Feature names must not be empty'; return 1 ;; esac
+    IFS=',' read -ra choices <<< "$features"
+    for feature in "${choices[@]}"; do
+      case "$feature" in shell|docker|python|tools) ;; *) log_fail "Unknown feature: $feature"; return 1 ;; esac
+    done
+  fi
+  export VM_INIT_USER_OPTION="$account"
+  export VM_INIT_ALL_USERS=0
+  resolve_target_users || return 1
+  users=$(printf '%s' "$VM_INIT_TARGET_USERS" | jq -R 'split(" ")')
+  jq --argjson users "$users" --arg features ",$features," --argjson template "$template" '
     .users = $users |
     .shell.enabled = ($features | contains(",shell,")) |
     .docker.enabled = ($features | contains(",docker,")) |
     .python.enabled = ($features | contains(",python,")) |
     .github_releases.enabled = ($features | contains(",tools,")) |
-    if .shell.enabled then . else .apt.packages.shell = [] end |
-    if .python.enabled then . else .apt.packages.python = [] end
+    if $template and (.shell.enabled | not) and .apt.packages.shell then .apt.packages.shell = [] else . end |
+    if $template and (.python.enabled | not) and .apt.packages.python then .apt.packages.python = [] else . end
   ' <<< "$json" > "$VM_INIT_SETUP_TMP" || return 1
-  VM_INIT_SETUP_DEST="${CONFIG}"
-  if [[ "$CONFIG_EXPLICIT" != 1 ]]; then VM_INIT_SETUP_DEST=/etc/vm-init/vm-init.yml; fi
-  CONFIG="$VM_INIT_SETUP_TMP"
   CONFIG_EXPLICIT=1
   export VM_INIT_CONFIG_ORIGIN='setup choices'
-  log_info "Setup choices: accounts ${account}; features ${features}"
+  log_info "Setup choices: accounts ${VM_INIT_TARGET_USERS// /,}; features ${features:-none}"
 }
 
 # Resolve versions from the local APT cache without refreshing it. Apply may
@@ -117,13 +124,19 @@ confirm_setup_plan() {
   if [[ "${VM_INIT_YES:-0}" != 1 ]]; then
     printf 'Apply these changes? [y/N]: '
     read -r answer || return 1
-    case "$answer" in y|Y|yes) ;; *) log_info 'Setup cancelled; no changes applied'; return 2 ;; esac
+    case "$answer" in y|Y|yes) ;; *) log_info 'Setup cancelled; no configuration saved or modules applied'; return 2 ;; esac
   fi
   # The configuration is only persisted after the user has reviewed the plan.
   if [[ -f "$VM_INIT_SETUP_DEST" ]]; then
     cp -p "$VM_INIT_SETUP_DEST" "${VM_INIT_SETUP_DEST}.${VM_INIT_RUN_ID}.bak" || return 1
   fi
-  install -D -m 0644 "$CONFIG" "$VM_INIT_SETUP_DEST" || return 1
+  local destination_dir staged
+  destination_dir=$(dirname "$VM_INIT_SETUP_DEST")
+  (umask 077; mkdir -p "$destination_dir") || return 1
+  staged=$(mktemp "$destination_dir/.vm-init-config.XXXXXX") || return 1
+  if ! install -m 0600 "$CONFIG" "$staged" || ! mv -f "$staged" "$VM_INIT_SETUP_DEST"; then
+    rm -f "$staged"; return 1
+  fi
   VM_INIT_SOURCE_CONFIG="$VM_INIT_SETUP_DEST"
 }
 

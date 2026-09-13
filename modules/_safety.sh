@@ -38,7 +38,11 @@ acquire_run_lock() {
   # A managed update invokes the installer and preparation in child shells.
   # They inherit the same open file description, rather than locking twice.
   if [[ -n "${VM_INIT_LOCK_FD:-}" ]] && flock -n "$VM_INIT_LOCK_FD" 2>/dev/null; then return 0; fi
-  mkdir -p "$VM_INIT_STATE_DIR" || return 1
+  if [[ "$VM_INIT_STATE_DIR" == "$VM_INIT_PREFIX/state" ]]; then
+    install -d -m 0755 "$VM_INIT_PREFIX" || return 1
+  fi
+  (umask 077; mkdir -p "$VM_INIT_STATE_DIR") || return 1
+  chmod 0700 "$VM_INIT_STATE_DIR" || return 1
   exec {VM_INIT_LOCK_FD}>"$VM_INIT_STATE_DIR/run.lock"
   if ! flock -n "$VM_INIT_LOCK_FD"; then
     log_fail "Another vm-init change is running. Wait for it to finish, then retry."

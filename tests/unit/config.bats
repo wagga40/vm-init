@@ -32,3 +32,65 @@ teardown() { cleanup_test_tmpdir; }
   [ "$status" -ne 0 ]
   [ ! -e "$TEST_TMPDIR/installed" ]
 }
+
+mock_accounts() {
+  getent() {
+    case "${2:-}" in
+      root) echo 'root:x:0:0:root:/root:/bin/bash' ;;
+      alice) echo 'alice:x:1000:1000::/home/alice:/bin/bash' ;;
+      bob) echo 'bob:x:1001:1001::/srv/bob:/bin/bash' ;;
+      '') printf '%s\n' 'root:x:0:0:root:/root:/bin/bash' 'alice:x:1000:1000::/home/alice:/bin/bash' 'bob:x:1001:1001::/srv/bob:/bin/bash' 'daemon:x:1002:1002::/srv/daemon:/usr/sbin/nologin' ;;
+      *) return 2 ;;
+    esac
+  }
+}
+
+@test "account selection prioritizes CLI then YAML then sudo user and root" {
+  mock_accounts
+  echo 'users: [bob]' > "$CONFIG"
+  SUDO_USER=alice VM_INIT_USER_OPTION=root
+  resolve_target_users
+  [ "$VM_INIT_TARGET_USERS" = root ]
+  VM_INIT_USER_OPTION=''
+  resolve_target_users
+  [ "$VM_INIT_TARGET_USERS" = bob ]
+  echo '{}' > "$CONFIG"
+  resolve_target_users
+  [ "$VM_INIT_TARGET_USERS" = alice ]
+  unset SUDO_USER
+  id() { echo root; }
+  resolve_target_users
+  [ "$VM_INIT_TARGET_USERS" = root ]
+}
+
+@test "selected users are deduplicated and all-users excludes non-login accounts" {
+  mock_accounts
+  echo '{}' > "$CONFIG"
+  VM_INIT_USER_OPTION='root,alice,root,bob'
+  resolve_target_users
+  [ "$VM_INIT_TARGET_USERS" = 'root alice bob' ]
+  VM_INIT_USER_OPTION='' VM_INIT_ALL_USERS=1
+  resolve_target_users
+  [ "$VM_INIT_TARGET_USERS" = 'root alice bob' ]
+}
+
+@test "account resolution rejects nonexistent accounts" {
+  mock_accounts
+  echo '{}' > "$CONFIG"
+  VM_INIT_USER_OPTION='root,missing'
+  run resolve_target_users
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'Account does not exist: missing'* ]]
+}
+
+@test "account names never expand as filesystem globs" {
+  mock_accounts
+  echo '{}' > "$CONFIG"
+  mkdir "$TEST_TMPDIR/names"
+  touch "$TEST_TMPDIR/names/root"
+  cd "$TEST_TMPDIR/names"
+  VM_INIT_USER_OPTION='*'
+  run resolve_target_users
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'Invalid account name: *'* ]]
+}

@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Shared helpers for vm-init modules. Sourced by vm-init.sh before any module.
 
+if ! declare -F init_layout >/dev/null; then
+  # shellcheck source=modules/_layout.sh
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_layout.sh"
+fi
+init_layout
+
 # ---------- Colors, symbols & terminal detection ----------
 #
 # Color is enabled when stdout is a TTY and the terminal reports color
@@ -305,7 +311,7 @@ print_rule() {
 }
 
 # Print a left-aligned label followed by a value. Label is dim, value plain.
-#   print_kv "Config" "/etc/vm-init/vm-init.yml"
+#   print_kv "Config" "/opt/vm-init/config/vm-init.yml"
 # Optional third arg overrides label column width (default: 14).
 print_kv() {
   local label="$1" value="${2:-}" width="${3:-14}"
@@ -731,8 +737,6 @@ github_latest_version() {
 # every binary's --version. One key=value pair per line; keys are namespaced
 # (e.g. "github_release.bandwhich") to avoid collisions.
 
-: "${VM_INIT_STATE_DIR:=/var/lib/vm-init}"
-: "${VM_INIT_STATE_FILE:=${VM_INIT_STATE_DIR}/state}"
 
 state_get() {
   local key="$1" value

@@ -9,15 +9,8 @@ setup() {
   export VM_INIT_PREFIX="$TEST_TMPDIR/installed"
   export VM_INIT_BIN_DIR="$TEST_TMPDIR/commands"
   mkdir -p "$TEST_TMPDIR/release/modules" "$TEST_TMPDIR/downloads" "$TEST_TMPDIR/bin"
-  touch "$TEST_TMPDIR/release/modules/_common.sh" "$TEST_TMPDIR/release/modules/_config.sh"
-  echo 1.9.0 > "$TEST_TMPDIR/release/VERSION"
-  cat > "$TEST_TMPDIR/release/vm-init.sh" <<'SH'
-#!/usr/bin/env bash
-if [[ "$1" == prepare ]]; then
-  [[ "${FAIL_PREPARE:-0}" != 1 ]] || exit 1
-  touch "$TEST_TMPDIR/prepared"
-fi
-SH
+  cp "$VM_INIT_SH" "$VM_INIT_REPO_ROOT/VERSION" "$VM_INIT_REPO_ROOT/vm-init.yml" "$TEST_TMPDIR/release/"
+  cp -R "$VM_INIT_REPO_ROOT/modules/." "$TEST_TMPDIR/release/modules/"
   tar czf "$TEST_TMPDIR/downloads/vm-init.tar.gz" -C "$TEST_TMPDIR" release
   (cd "$TEST_TMPDIR/downloads" && sha256sum vm-init.tar.gz > vm-init.tar.gz.sha256)
   cat > "$TEST_TMPDIR/bin/curl" <<'SH'
@@ -34,19 +27,23 @@ SH
 
 teardown() { cleanup_test_tmpdir; }
 
-@test "installer prepares before swapping and preserves readable directory permissions" {
+@test "installer installs code without requiring a separate preparation and preserves readable permissions" {
   run bash "$VM_INIT_REPO_ROOT/scripts/install.sh" --no-symlink
   [ "$status" -eq 0 ]
-  [ -f "$TEST_TMPDIR/prepared" ]
-  [ -f "$VM_INIT_PREFIX/vm-init.sh" ]
+  [ ! -d "$VM_INIT_STATE_DIR/runs" ]
+  [ -f "$VM_INIT_PREFIX/app/vm-init.sh" ]
+  [ -x "$VM_INIT_PREFIX/bin/vm-init" ]
   [ "$(stat -c %a "$VM_INIT_PREFIX")" = 755 ]
-  [ "$(stat -c %a "$VM_INIT_PREFIX/vm-init.sh")" = 755 ]
+  [ "$(stat -c %a "$VM_INIT_PREFIX/app/vm-init.sh")" = 755 ]
 }
 
-@test "installer keeps the old installation when preparation fails" {
+@test "installer keeps the old installation when the release fails syntax validation" {
   mkdir -p "$VM_INIT_PREFIX"
   echo old-installation > "$VM_INIT_PREFIX/vm-init.sh"
-  FAIL_PREPARE=1 run bash "$VM_INIT_REPO_ROOT/scripts/install.sh" --no-symlink
+  echo 'if invalid syntax' > "$TEST_TMPDIR/release/vm-init.sh"
+  tar czf "$TEST_TMPDIR/downloads/vm-init.tar.gz" -C "$TEST_TMPDIR" release
+  (cd "$TEST_TMPDIR/downloads" && sha256sum vm-init.tar.gz > vm-init.tar.gz.sha256)
+  run bash "$VM_INIT_REPO_ROOT/scripts/install.sh" --no-symlink
   [ "$status" -ne 0 ]
   [ "$(cat "$VM_INIT_PREFIX/vm-init.sh")" = old-installation ]
   [ ! -e "$TEST_TMPDIR/prepared" ]
@@ -75,4 +72,50 @@ SH
   grep -qxF -- "$VM_INIT_PREFIX" "$TEST_TMPDIR/update-arguments"
   grep -qxF -- "$VM_INIT_BIN_DIR" "$TEST_TMPDIR/update-arguments"
   [ "$(tail -n 1 "$TEST_TMPDIR/update-arguments")" = 1 ]
+}
+
+@test "a second installation preserves configuration state and logs" {
+  run bash "$VM_INIT_REPO_ROOT/scripts/install.sh"
+  [ "$status" -eq 0 ]
+  mkdir -p "$VM_INIT_PREFIX/config" "$VM_INIT_PREFIX/logs" "$VM_INIT_STATE_DIR/runs/saved"
+  echo 'users: [root]' > "$VM_INIT_PREFIX/config/vm-init.yml"
+  echo baseline > "$VM_INIT_STATE_DIR/runs/saved/config.json"
+  echo log > "$VM_INIT_PREFIX/logs/old.log"
+  run bash "$VM_INIT_REPO_ROOT/scripts/install.sh"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$VM_INIT_PREFIX/config/vm-init.yml")" = 'users: [root]' ]
+  [ "$(cat "$VM_INIT_STATE_DIR/runs/saved/config.json")" = baseline ]
+  [ "$(cat "$VM_INIT_PREFIX/logs/old.log")" = log ]
+  [ -x "$VM_INIT_BIN_DIR/vm-init" ]
+}
+
+@test "failed command creation restores the previous managed application and entry point" {
+  run bash "$VM_INIT_REPO_ROOT/scripts/install.sh" --no-symlink
+  [ "$status" -eq 0 ]
+  echo previous > "$VM_INIT_PREFIX/app/previous"
+  before=$(readlink "$VM_INIT_PREFIX/bin/vm-init")
+  touch "$VM_INIT_BIN_DIR"
+  run bash "$VM_INIT_REPO_ROOT/scripts/install.sh"
+  [ "$status" -ne 0 ]
+  [ "$(cat "$VM_INIT_PREFIX/app/previous")" = previous ]
+  [ "$(readlink "$VM_INIT_PREFIX/bin/vm-init")" = "$before" ]
+}
+
+@test "installer rejects a checksum mismatch before changing an existing application" {
+  mkdir -p "$VM_INIT_PREFIX"
+  echo old > "$VM_INIT_PREFIX/vm-init.sh"
+  printf corrupt >> "$TEST_TMPDIR/downloads/vm-init.tar.gz"
+  run bash "$VM_INIT_REPO_ROOT/scripts/install.sh"
+  [ "$status" -ne 0 ]
+  [ "$(cat "$VM_INIT_PREFIX/vm-init.sh")" = old ]
+  [ ! -d "$VM_INIT_PREFIX/app" ]
+}
+
+@test "using the internal bin directory as the command directory never creates a circular link" {
+  export VM_INIT_BIN_DIR="$VM_INIT_PREFIX/bin"
+  run bash "$VM_INIT_REPO_ROOT/scripts/install.sh"
+  [ "$status" -eq 0 ]
+  [ -x "$VM_INIT_BIN_DIR/vm-init" ]
+  run "$VM_INIT_BIN_DIR/vm-init" --version
+  [ "$status" -eq 0 ]
 }

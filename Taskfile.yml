@@ -38,6 +38,8 @@ tasks:
         cp vm-init.sh vm-init.yml VERSION "$stage/"
         cp -r modules "$stage/"
         cp -r scripts "$stage/"
+        mkdir -p "$stage/docs"
+        cp docs/configuration.md docs/operations.md docs/development.md "$stage/docs/"
         [ -d examples ] && cp -r examples "$stage/" || true
         [ -f README.md ] && cp README.md "$stage/" || true
         [ -f LICENSE ]   && cp LICENSE   "$stage/" || true

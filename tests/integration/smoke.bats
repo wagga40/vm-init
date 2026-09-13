@@ -93,6 +93,7 @@ fi
 SH
   chmod +x "$test_root/scripts/install.sh"
 
+  VM_INIT_PREFIX="$test_root" \
   CAPTURE_ARGS="$capture_args" \
   CAPTURE_ENV="$capture_env" \
   VM_INIT_UPDATE_LATEST_OVERRIDE="v9.9.9" \
