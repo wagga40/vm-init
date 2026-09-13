@@ -19,12 +19,14 @@
 #     Clear those paths so Fish and its plugins use the selected account's
 #     home, matching the location of the managed configuration files.
 run_fish_as() {
-  local user="$1" fish_cmd="$2"
+  local user="$1" fish_cmd="$2" runner=run_quiet
+  # A probe prints its own concise mismatch; do not dump generated Fish code.
+  if [[ "${3:-}" == probe ]]; then runner=run_maybe_timeout; fi
   # shellcheck disable=SC2016  # "$1" is sh's positional arg, not ours
   if [[ "$user" == "root" ]]; then
-    run_quiet sh -c 'unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME XDG_RUNTIME_DIR; cd / && exec fish -c "$1"' _ "$fish_cmd" < /dev/null
+    "$runner" sh -c 'unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME XDG_RUNTIME_DIR; cd / && exec fish -c "$1"' _ "$fish_cmd" < /dev/null
   else
-    run_quiet sudo -u "$user" -H sh -c 'unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME XDG_RUNTIME_DIR; cd / && exec fish -c "$1"' _ "$fish_cmd" < /dev/null
+    "$runner" sudo -u "$user" -H sh -c 'unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME XDG_RUNTIME_DIR; cd / && exec fish -c "$1"' _ "$fish_cmd" < /dev/null
   fi
 }
 
@@ -33,7 +35,7 @@ run_fish_as() {
 # about a human user (who may have been added after the first run, or had their
 # home recreated). `functions -q` triggers fish's autoloader and stays silent.
 fisher_present_for() {
-  run_fish_as "$1" 'functions -q fisher' >/dev/null 2>&1
+  run_fish_as "$1" 'functions -q fisher' probe >/dev/null 2>&1
 }
 
 install_fisher_tide() {
@@ -206,10 +208,11 @@ fish_aliases_match_for() {
     # expected alias inside this disposable shell never invokes its command.
     check+="$(printf 'set -l actual (functions %s | string match -rv "^#"); alias -- %s %s; set -l expected (functions %s | string match -rv "^#"); ' "$quoted_key" "$quoted_key" "$(fish_quote "$value")" "$quoted_key")"
     # shellcheck disable=SC2016 # these variables belong to Fish
-    check+='test "$actual" = "$expected"; or exit 1; '
+    check+='test "$actual" = "$expected"; or begin; '
+    check+="printf '%s\\n' $(fish_quote "$user: alias $key does not match the configured command") >&2; exit 1; end; "
   done < <(yq -r '.shell.aliases // {} | keys | .[]' "$CONFIG")
   [[ -n "$check" ]] || return 0
-  run_fish_as "$user" "$check"
+  run_fish_as "$user" "$check" probe
 }
 
 install_shell() {
@@ -244,7 +247,7 @@ install_shell() {
       setup_fisher_for "$user" "$home_dir" || { rm -f "$temp"; return 1; }
     fi
     if [[ "$default_shell" == fish ]] && ! fish_aliases_match_for "$user"; then
-      log_warn "${user}: an existing Fish setting overrides a managed alias"
+      log_warn "${user}: some Fish aliases differ from your configuration"
       vm_init_note "Review ${home_dir}/.config/fish/config.fish for aliases that override vm-init settings, then run status."
     fi
     log_ok "${default_shell} configured for ${user}"

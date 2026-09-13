@@ -88,6 +88,10 @@ jobs:
           {
             echo "## vm-init ${tag}"
             echo ""
+            if [[ -f "release-notes/${tag#v}.md" ]]; then
+              cat "release-notes/${tag#v}.md"
+              echo ""
+            fi
             echo "### Install"
             echo ""
             echo '```bash'

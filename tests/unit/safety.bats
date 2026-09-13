@@ -109,6 +109,30 @@ PY
   [ "$output" = $'4\n2' ]
 }
 
+@test "firewall verification recognizes profiles expanded by verbose status" {
+  source "$VM_INIT_REPO_ROOT/modules/ufw.sh"
+  rules=$'22/tcp (OpenSSH)  ALLOW IN  Anywhere\n22/tcp (OpenSSH (v6))  ALLOW IN  Anywhere (v6)'
+  run ufw_rule_present OpenSSH "$rules" 4
+  [ "$status" -eq 0 ]
+  run ufw_rule_present 22/tcp "$rules" 4
+  [ "$status" -eq 0 ]
+  run ufw_rule_present OpenSSH "$rules" 6
+  [ "$status" -eq 0 ]
+  run ufw_rule_present OpenSSH '2222/tcp (OtherSSH)  ALLOW IN  Anywhere' 4
+  [ "$status" -eq 1 ]
+}
+
+@test "firewall verification permits source-specific bans and checks conflicts by family" {
+  source "$VM_INIT_REPO_ROOT/modules/ufw.sh"
+  rules=$'22/tcp  REJECT IN  195.178.110.30 # Fail2Ban\n22/tcp (v6)  DENY IN  Anywhere (v6)\n22/tcp  ALLOW IN  Anywhere'
+  run ufw_rule_present 22/tcp "$rules" 4
+  [ "$status" -eq 0 ]
+  run ufw_rule_present 22/tcp "$rules" 6
+  [ "$status" -eq 1 ]
+  run ufw_rule_present 22/tcp $'22/tcp  DENY IN  Anywhere\n22/tcp  ALLOW IN  Anywhere' 4
+  [ "$status" -eq 1 ]
+}
+
 @test "existing firewall rules are recognized while the firewall is inactive" {
   source "$VM_INIT_REPO_ROOT/modules/ufw.sh"
   run ufw_rule_exists 'Nginx Full' $"ufw allow 'Nginx Full' comment 'administrator'"
@@ -130,6 +154,7 @@ PY
   export VM_INIT_STATE_DIR="$TEST_TMPDIR/state"
   export VM_INIT_DNS_ROOT="$TEST_TMPDIR/system"
   export CONFIG="$TEST_TMPDIR/dns.yml"
+  export VM_INIT_NOTES_FILE="$TEST_TMPDIR/notes"
   echo 'dns: {enabled: true}' > "$CONFIG"
   mkdir -p "$VM_INIT_DNS_ROOT/etc/systemd/system" "$VM_INIT_DNS_ROOT/etc/systemd/resolved.conf.d" "$VM_INIT_DNS_ROOT/usr/local/sbin" "$VM_INIT_DNS_ROOT/usr/local/bin"
   echo original > "$VM_INIT_DNS_ROOT/etc/systemd/resolved.conf.d/99-vm-init-dnsproxy.conf"
@@ -158,6 +183,9 @@ PY
     [ "$(readlink "$VM_INIT_DNS_ROOT/etc/resolv.conf")" = original-resolver ]
     [ ! -e "$VM_INIT_DNS_ROOT/usr/local/bin/dnsproxy" ]
     [ ! -e "$VM_INIT_DNS_ROOT/etc/systemd/system/dnsproxy.service" ]
+    [[ "$output" == *'Previous DNS configuration restored'* ]]
+    [[ "$output" != *'DNS routing verified through'* ]]
+    [ ! -s "$VM_INIT_NOTES_FILE" ]
   done
 }
 
@@ -173,6 +201,36 @@ PY
   run dns_verify_routing 127.0.0.1 5353 https://wanted.invalid
   [ "$status" -ne 0 ]
   [[ "$output" == *'differs from the requested upstream'* ]]
+}
+
+@test "DNS routing accepts duplicate local endpoints but rejects another server or port" {
+  source "$VM_INIT_REPO_ROOT/modules/dns.sh"
+  export VM_INIT_DNS_ROOT="$TEST_TMPDIR/system"
+  mkdir -p "$VM_INIT_DNS_ROOT/etc"
+  ln -s /run/systemd/resolve/stub-resolv.conf "$VM_INIT_DNS_ROOT/etc/resolv.conf"
+  systemctl() { if [[ "$1" == show ]]; then echo 'argv[]=/usr/local/bin/dnsproxy --upstream=https://wanted.invalid --listen=127.0.0.1 --port=5353 ;'; fi; }
+  resolvectl() {
+    if [[ "$1" == dns ]]; then printf 'Global: %s\nLink 2 (eth0): %s\n' "$global_servers" "$link_servers"
+    else printf 'Global: ~.\nLink 2 (eth0): ~.\n'; fi
+  }
+  getent() { echo '192.0.2.80 example.com'; }
+  ip() { echo 'default via 192.0.2.1 dev eth0'; }
+  global_servers='127.0.0.1:5353 127.0.0.1:5353'
+  link_servers="$global_servers"
+  run dns_verify_routing 127.0.0.1 5353 https://wanted.invalid
+  [ "$status" -eq 0 ]
+  for unexpected in 9.9.9.9 127.0.0.1:53; do
+    global_servers="127.0.0.1:5353 $unexpected"
+    run dns_verify_routing 127.0.0.1 5353 https://wanted.invalid
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"observed $global_servers"* ]]
+    global_servers='127.0.0.1:5353'
+    link_servers="127.0.0.1:5353 $unexpected"
+    run dns_verify_routing 127.0.0.1 5353 https://wanted.invalid
+    [ "$status" -eq 1 ]
+    [[ "$output" == *'DNS routing on eth0 is not pinned'* ]]
+    link_servers='127.0.0.1:5353'
+  done
 }
 
 @test "retry commands preserve spaces, literal shell characters, users and options" {
@@ -331,6 +389,8 @@ PY
   echo 'alias ll "ls -a"' > "$TEST_TMPDIR/config/fish/config.fish"
   run fish_aliases_match_for alice
   [ "$status" -eq 1 ]
+  [[ "$output" == *'alice: alias ll does not match the configured command'* ]]
+  [[ "$output" != *'set -l actual'* ]]
 }
 
 @test "Fish aliases and Fisher use the account home despite inherited XDG paths" {

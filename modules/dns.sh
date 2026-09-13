@@ -241,6 +241,7 @@ EOF
   mkdir -p "${VM_INIT_DNS_ROOT:-}/etc/systemd/resolved.conf.d"
   cat > "${VM_INIT_DNS_ROOT:-}/etc/systemd/resolved.conf.d/99-vm-init-dnsproxy.conf" <<EOF
 [Resolve]
+DNS=
 DNS=${resolved_dns_target}
 FallbackDNS=
 Domains=~.
@@ -318,8 +319,7 @@ EOF
   fi
 
   if verify_doh_resolves "$listen_address" "$listen_port"; then
-    log_ok "dnsproxy configured and resolving via ${upstream}"
-    vm_init_note "DNS now goes through dnsproxy. If it breaks: sudo vm-init repair dns --with-fallback"
+    log_ok "Direct query to the local DNS proxy succeeds"
   else
     log_warn "dnsproxy is listening but DNS resolution failed"
     log_info "Debug: resolvectl status"
@@ -394,15 +394,19 @@ dns_verify_routing() {
   if [[ "$(readlink "${VM_INIT_DNS_ROOT:-}/etc/resolv.conf")" != /run/systemd/resolve/stub-resolv.conf ]]; then
     log_fail 'resolv.conf does not use the systemd-resolved stub'; rc=1
   fi
-  dns=$(resolvectl dns) || return 1
-  domains=$(resolvectl domain) || return 1
-  if ! awk -v target="$target" '$1 == "Global:" && NF == 2 && $2 == target { found=1 } END { exit !found }' <<< "$dns"; then
-    log_fail 'Effective global DNS differs from the local proxy'; rc=1
+  dns=$(LC_ALL=C resolvectl dns) || return 1
+  domains=$(LC_ALL=C resolvectl domain) || return 1
+  # resolved may list the same endpoint more than once. Every reported
+  # endpoint must match; duplicate entries are not a different DNS route.
+  if ! awk -v target="$target" '$1 == "Global:" { for(i=2;i<=NF;i++) { found=1; if($i != target) different=1 } } END { exit (!found || different) }' <<< "$dns"; then
+    log_fail "Effective global DNS differs: expected only ${target}; observed $(awk '/^Global:/ { sub(/^Global:[[:space:]]*/, ""); print }' <<< "$dns")"
+    log_info 'Inspect active resolver settings with: resolvectl dns'
+    rc=1
   fi
   local iface
   while read -r iface; do
     [[ -n "$iface" ]] || continue
-    if ! awk -v iface="($iface):" -v target="$target" '$3 == iface && NF == 4 && $4 == target { found=1 } END { exit !found }' <<< "$dns" \
+    if ! awk -v iface="($iface):" -v target="$target" '$3 == iface { for(i=4;i<=NF;i++) { found=1; if($i != target) different=1 } } END { exit (!found || different) }' <<< "$dns" \
        || ! awk -v iface="($iface):" '$3 == iface { for(i=4;i<=NF;i++) if($i == "~.") found=1 } END { exit !found }' <<< "$domains"; then
       log_fail "DNS routing on ${iface} is not pinned to the local proxy"; rc=1
     fi
@@ -427,6 +431,7 @@ install_dns() (
         log_fail "Automatic DNS restoration failed; backup retained at $snapshot"
         exit 1
       fi
+      log_ok "Previous DNS configuration restored"
     fi
     rm -rf "$snapshot"
     exit "$rc"
@@ -444,4 +449,6 @@ install_dns() (
     cp -a "$snapshot" "$VM_INIT_STATE_DIR/dns-original"
   fi
   committed=1
+  log_ok "DNS routing verified through $(dns_upstream_from_config)"
+  vm_init_note "DNS now goes through dnsproxy. If it breaks: sudo vm-init repair dns --with-fallback"
 )

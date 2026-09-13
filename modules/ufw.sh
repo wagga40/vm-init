@@ -38,11 +38,19 @@ ufw_rule_present() {
       sub(/^[ \t]+/, ""); sub(/[ \t]+$/, "")
       n=split($0, col, /[ \t][ \t]+/)
       if(n < 3) next
-      v6=(col[1] ~ / \(v6\)$/)
-      sub(/ \(v6\)$/, "", col[1])
+      v6=(col[1] ~ / \(v6\)/)
+      sub(/ \(v6\)/, "", col[1])
+      # Verbose status expands profiles, e.g. "22/tcp (OpenSSH)".
+      profile=col[1]
+      if (sub(/^.* \(/, "", profile)) sub(/\)$/, "", profile)
+      else profile=""
+      sub(/ \(.*\)$/, "", col[1])
       sub(/[ \t]+#.*/, "", col[3]); sub(/ \(v6\)$/, "", col[3])
-      if(col[1] == wanted && col[2] ~ /^(DENY|REJECT)/ && col[2] !~ /OUT/) blocked=1
-      if(col[1] == wanted && (col[2] == "ALLOW" || col[2] == "ALLOW IN") && col[3] == "Anywhere" && v6 == (family == 6)) found=1
+      matches=(col[1] == wanted || profile == wanted)
+      if(matches && col[3] == "Anywhere" && v6 == (family == 6)) {
+        if(col[2] ~ /^(DENY|REJECT)/ && col[2] !~ /OUT/) blocked=1
+        if(col[2] == "ALLOW" || col[2] == "ALLOW IN") found=1
+      }
     }
     END { exit (!found || blocked) }
   ' <<< "$status"
@@ -175,7 +183,22 @@ install_ufw() (
   snapshot=$(mktemp -d "$VM_INIT_STATE_DIR/firewall.XXXXXX")
   snapshot_paths "$snapshot" "$root/etc/ufw" "$root/etc/default/ufw"
   if ufw status | grep -q '^Status: active'; then echo 1; else echo 0; fi > "$snapshot/active"
-  trap 'rc=$?; if [[ "$committed" != 1 ]]; then systemctl stop vm-init-firewall-rollback.timer >/dev/null 2>&1 || true; rm -f "$VM_INIT_STATE_DIR/firewall-pending"; if ! ufw_rollback "$snapshot"; then restored=0; log_fail "Firewall restoration failed; backup: $snapshot"; fi; fi; if [[ "$restored" == 1 && ! -f "$VM_INIT_STATE_DIR/firewall-pending" ]]; then rm -rf "$snapshot"; fi; exit "$rc"' EXIT
+  trap '
+    rc=$?
+    if [[ "$committed" != 1 ]]; then
+      systemctl stop vm-init-firewall-rollback.timer >/dev/null 2>&1 || true
+      rm -f "$VM_INIT_STATE_DIR/firewall-pending"
+      log_warn "Firewall setup failed; restoring the previous rules"
+      if ufw_rollback "$snapshot"; then
+        log_ok "Previous firewall rules restored; no confirmation is needed"
+      else
+        restored=0
+        log_fail "Firewall restoration failed; backup: $snapshot"
+      fi
+    fi
+    if [[ "$restored" == 1 && ! -f "$VM_INIT_STATE_DIR/firewall-pending" ]]; then rm -rf "$snapshot"; fi
+    exit "$rc"
+  ' EXIT
   if [[ -n "${SSH_CONNECTION:-}" ]]; then
     log_info "Preserving the current SSH port: ${SSH_CONNECTION##* }/tcp"
     ufw_schedule_rollback "$snapshot"
@@ -204,7 +227,7 @@ install_ufw() (
   run_quiet ufw default "$outgoing" outgoing
   run_quiet ufw --force enable
   run_quiet ufw reload
-  verify_ufw
+  verify_ufw applying
   touch "$snapshot/ready"
   committed=1
   if [[ -n "${SSH_CONNECTION:-}" ]]; then
@@ -247,7 +270,7 @@ verify_ufw() {
     log_fail 'Obsolete vm-init firewall rules remain active'; rc=1
   fi
   if (( rc == 0 )); then log_ok 'Firewall active; requested policies and allow rules match'; fi
-  if [[ -f "$VM_INIT_STATE_DIR/firewall-pending" ]]; then
+  if [[ "${1:-status}" != applying && -f "$VM_INIT_STATE_DIR/firewall-pending" ]]; then
     log_warn 'Firewall confirmation is pending; reconnect and run confirm-firewall before automatic rollback'
   fi
   return "$rc"
