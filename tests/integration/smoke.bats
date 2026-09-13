@@ -79,6 +79,7 @@ teardown() {
   cp "$VM_INIT_REPO_ROOT"/modules/_*.sh "$test_root/modules/"
   cp "$VM_INIT_DEFAULT_CONFIG" "$test_root/vm-init.yml"
   cp "$VM_INIT_REPO_ROOT/VERSION" "$test_root/VERSION"
+  printf '/usr/local/sbin\n0\n' > "$test_root/.vm-init-managed"
 
   cat > "$test_root/scripts/install.sh" <<'SH'
 #!/usr/bin/env bash
@@ -101,7 +102,7 @@ SH
   [[ "$output" == *"Updating vm-init installation under /opt/vm-init"* ]]
   [[ "$output" == *"Latest available release: 9.9.9"* ]]
 
-  grep -q -- '--prefix /opt/vm-init' "$capture_args"
+  grep -qF -- "--prefix $test_root" "$capture_args"
   grep -q -- '--version v9.9.9' "$capture_args"
   grep -q '^__UNSET__$' "$capture_env"
 }

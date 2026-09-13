@@ -9,7 +9,7 @@ users: []
 apt:
   enabled: true
   packages:
-    shell: [fish, lsd, bat, zoxide]
+    shell: [fish, bat, zoxide]
     editor: [vim, neovim]
     build: [build-essential, git, curl, wget]
     system: [ca-certificates, gnupg, lsb-release]
@@ -115,7 +115,7 @@ shell:
   tide: false
   zoxide: true
   aliases:
-    ll: lsd -ahlF --header --group-dirs first
+    ll: ls -ahlF --group-directories-first
     cat: bat
     catp: bat -pp
   direnv: false

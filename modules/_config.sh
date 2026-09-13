@@ -2,11 +2,15 @@
 # Configuration and account handling shared by interactive and automated runs.
 
 bootstrap_config_tools() {
-  local command missing=()
-  for command in yq jq python3; do
+  local command missing=() needs_yq=0
+  for command in jq python3; do
     if ! command -v "$command" >/dev/null; then missing+=("$command"); fi
   done
-  if (( ${#missing[@]} > 0 )); then
+  if ! command -v yq >/dev/null; then
+    needs_yq=1
+    missing+=(curl ca-certificates)
+  fi
+  if (( ${#missing[@]} > 0 || needs_yq )); then
     if [[ $EUID -ne 0 ]]; then
       log_fail 'Setup tools are missing. Run: sudo vm-init prepare'
       return 1
@@ -16,8 +20,26 @@ bootstrap_config_tools() {
     run_maybe_timeout apt-get -o "DPkg::Lock::Timeout=${VM_INIT_APT_LOCK_TIMEOUT:-1800}" update -q || return 1
     run_maybe_timeout apt-get -o "DPkg::Lock::Timeout=${VM_INIT_APT_LOCK_TIMEOUT:-1800}" install -y -q "${missing[@]}" || return 1
   fi
+  if (( needs_yq )); then install_config_yq || return 1; fi
   check_config_tools
 }
+
+# Ubuntu 22.04 does not provide an APT yq package. Pin and verify the
+# upstream binary; compatible preinstalled parsers are left in place.
+install_config_yq() (
+  local arch checksum temporary
+  case "$(uname -m)" in
+    x86_64) arch=amd64; checksum=a2c097180dd884a8d50c956ee16a9cec070f30a7947cf4ebf87d5f36213e9ed7 ;;
+    aarch64|arm64) arch=arm64; checksum=0e7e1524f68d91b3ff9b089872d185940ab0fa020a5a9052046ef10547023156 ;;
+    *) log_fail 'Install mikefarah yq v4 or Python yq for this architecture, then retry prepare'; return 1 ;;
+  esac
+  temporary=$(mktemp -d) || return 1
+  trap 'rm -rf "$temporary"' EXIT
+  log_step 'Installing verified yq v4.44.3'
+  download_file "https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_${arch}" "$temporary/yq" || return 1
+  verify_sha256 "$temporary/yq" "$checksum" || return 1
+  install -m 0755 "$temporary/yq" /usr/local/bin/yq
+)
 
 check_config_tools() {
   if ! require_commands yq jq python3; then
@@ -94,7 +116,7 @@ validate_config_schema() {
     (select(.shell.default_shell != null and .shell.default_shell != "fish" and .shell.default_shell != "bash") | "shell.default_shell must be fish or bash"),
     (select(.shell.tide == true and .shell.fisher != true) | "shell.tide requires shell.fisher: true"),
     (select(.shell.default_shell == "bash" and (.shell.fisher == true or .shell.tide == true)) | "Fisher and Tide require shell.default_shell: fish"),
-    (paths(strings) as $p | getpath($p) | select(contains("\r") or contains("\n") or contains("\u0000")) | "Configuration values must not contain line breaks or NUL characters")
+    (paths(strings) as $p | getpath($p) | select(explode | any(. == 0 or . == 10 or . == 13)) | "Configuration values must not contain line breaks or NUL characters")
   ' <<< "$encoded") || return 1
   if [[ -n "$errors" ]]; then
     while IFS= read -r error; do log_fail "$error"; done <<< "$errors"

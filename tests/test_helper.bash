@@ -36,6 +36,24 @@ cleanup_test_tmpdir() {
   [[ -n "${TEST_TMPDIR:-}" && -d "$TEST_TMPDIR" ]] && rm -rf "$TEST_TMPDIR"
 }
 
+# Match the production runner in a fresh Bash process. Calling a module
+# directly through Bats `run` can suppress errexit inside its transaction.
+# Usage: run_module_with_stubs <module> <entry point> <stub function>...
+run_module_with_stubs() {
+  local module="$1" entry="$2" stubs="$TEST_TMPDIR/module-stubs.sh"
+  shift 2
+  declare -f "$@" > "$stubs"
+  run bash -c '
+    set -uo pipefail
+    source "$VM_INIT_COMMON_SH"
+    source "$VM_INIT_REPO_ROOT/modules/_safety.sh"
+    source "$VM_INIT_REPO_ROOT/modules/_recovery.sh"
+    source "$VM_INIT_REPO_ROOT/modules/$1.sh"
+    source "$2"
+    run_with_errexit "$3"
+  ' _ "$module" "$stubs" "$entry"
+}
+
 # Put a fake binary on PATH that emits fixed stdout and exits with a given code.
 # Usage: stub_bin <name> <exit_code> [<stdout_file>]
 #   <stdout_file> path to a file whose contents will be printed by the stub.

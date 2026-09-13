@@ -57,7 +57,7 @@ teardown() { cleanup_test_tmpdir; }
   run "$VM_INIT_SH" setup --dry-run --user root --features shell,docker --config "$destination"
   [ "$status" -eq 0 ]
   [[ "$output" == *'accounts root; features shell,docker'* ]]
-  [[ "$output" == *'Required packages: bat,fish,lsd,zoxide'* ]]
+  [[ "$output" == *'Required packages: bat,fish,zoxide'* ]]
   [ ! -e "$destination" ]
 }
 

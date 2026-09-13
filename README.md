@@ -83,7 +83,7 @@ users: [alice]
 apt:
   enabled: true
   packages:
-    shell: [fish, lsd, bat, zoxide]
+    shell: [fish, bat, zoxide]
     extra: [jq, git, curl]
 
 shell:
@@ -94,7 +94,7 @@ shell:
   zoxide: true
   direnv: false
   aliases:
-    ll: lsd -ahlF --header --group-dirs first
+    ll: ls -ahlF --group-directories-first
     cat: bat
 
 docker:
@@ -237,4 +237,4 @@ task verify-single
 
 Tests cover checksum rejection, read-only mode conflicts, real competing POSIX locks, kernel parameter removal, firewall matching and ownership, DNS rollback, configuration validation, saved retries, account targeting, CLI workflows, and bundle recovery. Update tests use deterministic release responses.
 
-CI runs lint, tests, and real Ubuntu install checks. Privileged services and reboot behavior should additionally be exercised on disposable Ubuntu machines before a release. Requires Ubuntu, Bash 4+, and root for system changes. `prepare` installs missing configuration prerequisites from APT; preview and status never install dependencies.
+CI runs lint, tests, and real Ubuntu install checks. Privileged services and reboot behavior should additionally be exercised on disposable Ubuntu machines before a release. Requires Ubuntu, Bash 4+, and root for system changes. `prepare` installs missing configuration prerequisites from APT and, when needed, a pinned, checksum-verified yq binary; preview and status never install dependencies.

@@ -148,8 +148,11 @@ PY
   verify_doh_resolves() { [[ "$failure" != resolution ]]; }
   dns_verify_routing() { [[ "$failure" != routing ]]; }
   for failure in 'restart dnsproxy' 'restart systemd-resolved' listening resolution routing; do
+    export failure
     rm -f "$TEST_TMPDIR/failed-once"
-    run install_dns
+    run_module_with_stubs dns install_dns require_commands install_dnsproxy_binary \
+      ensure_systemd_resolved apt_get resolvectl systemctl wait_for_dnsproxy \
+      verify_doh_resolves dns_verify_routing
     [ "$status" -ne 0 ]
     [ "$(cat "$VM_INIT_DNS_ROOT/etc/systemd/resolved.conf.d/99-vm-init-dnsproxy.conf")" = original ]
     [ "$(readlink "$VM_INIT_DNS_ROOT/etc/resolv.conf")" = original-resolver ]
@@ -244,7 +247,7 @@ PY
 @test "firewall failure restores files and active state" {
   source "$VM_INIT_REPO_ROOT/modules/ufw.sh"
   export VM_INIT_STATE_DIR="$TEST_TMPDIR/state" VM_INIT_UFW_ROOT="$TEST_TMPDIR/system"
-  CONFIG="$TEST_TMPDIR/ufw.yml"
+  export CONFIG="$TEST_TMPDIR/ufw.yml"
   echo 'ufw: {allow: [22/tcp], ipv6: true}' > "$CONFIG"
   mkdir -p "$VM_INIT_UFW_ROOT/etc/ufw" "$VM_INIT_UFW_ROOT/etc/default"
   echo original > "$VM_INIT_UFW_ROOT/etc/ufw/user.rules"
@@ -264,7 +267,8 @@ PY
       reload) touch "$TEST_TMPDIR/restored-active" ;;
     esac
   }
-  run install_ufw
+  run_module_with_stubs ufw install_ufw require_commands ufw_lock \
+    detect_ssh_connection is_installed run_quiet sed systemctl ufw
   [ "$status" -eq 1 ]
   [ "$(cat "$VM_INIT_UFW_ROOT/etc/ufw/user.rules")" = original ]
   [ "$(cat "$VM_INIT_UFW_ROOT/etc/default/ufw")" = IPV6=no ]

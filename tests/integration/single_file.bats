@@ -138,7 +138,7 @@ teardown() {
     skip "yq v4 (mikefarah) not installed"
   fi
   cd "$TEST_TMPDIR"
-  run "$BUNDLE" --dry-run
+  run "$BUNDLE" --dry-run --user root
   [ "$status" -eq 0 ]
   [[ "$output" == *"DRY RUN"* ]]
   [[ "$output" == *"Dry run complete"* ]]
@@ -262,7 +262,7 @@ YAML
   cd "$workdir"
   run "$BUNDLE" --write-default-config
   [ "$status" -eq 0 ]
-  run "$BUNDLE" --dry-run --config "${workdir}/vm-init.yml"
+  run "$BUNDLE" --dry-run --user root --config "${workdir}/vm-init.yml"
   [ "$status" -eq 0 ]
   [[ "$output" == *"ok: 2"* ]]
   [[ "$output" == *"skipped: 9"* ]]
@@ -288,7 +288,7 @@ YAML
   fi
 
   cd "$empty_dir"
-  run ./vm-init --dry-run
+  run ./vm-init --dry-run --user root
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
   [[ "$output" == *"ok: 2"* ]]
   [[ "$output" == *"skipped: 9"* ]]

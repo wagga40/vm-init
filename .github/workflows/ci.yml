@@ -91,7 +91,7 @@ jobs:
       - name: Run bats unit tests
         run: |
           if [[ -d tests/unit ]] && compgen -G 'tests/unit/*.bats' > /dev/null; then
-            bats tests/unit
+            bats --print-output-on-failure tests/unit
           else
             echo "No unit tests yet"
           fi
@@ -175,13 +175,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install yq (mikefarah v4)
+      - name: Prepare configuration tools
         run: |
           set -euo pipefail
-          sudo curl -fsSL --retry 3 --connect-timeout 10 \
-            -o /usr/local/bin/yq \
-            https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
-          sudo chmod +x /usr/local/bin/yq
+          sudo ./vm-init.sh prepare
           yq --version
 
       - name: Create CI config for safe hosted-runner execution
@@ -193,7 +190,7 @@ jobs:
             enabled: true
             packages:
               cli: [jq]
-              shell: [fish, lsd, bat, zoxide]
+              shell: [fish, bat, zoxide]
               extra: []
           ufw: {enabled: false}
           fail2ban: {enabled: false}
@@ -209,7 +206,7 @@ jobs:
             tide: false
             zoxide: true
             direnv: false
-            aliases: {ll: "lsd -l", cat: bat}
+            aliases: {ll: "ls -l", cat: bat}
           YAML
           sudo useradd --create-home --shell /bin/bash vm-init-ci
           sudo useradd --create-home --shell /bin/bash vm-init-ci-two
@@ -233,6 +230,7 @@ jobs:
       - name: Verify the installed state
         run: |
           set -euo pipefail
+          trap 'echo "::error::Verification failed at line $LINENO: $BASH_COMMAND"' ERR
           sudo ./vm-init.sh --config ci-real-install.yml --verify --only apt,shell
           test "$(getent passwd vm-init-untouched | cut -d: -f7)" = /bin/bash
           sudo ./vm-init.sh status --json --config ci-real-install.yml > status.json
