@@ -11,6 +11,15 @@ init_layout() {
   local executable directory
   executable=$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")
   directory=$(cd "$(dirname "$executable")" && pwd)
+  # The pre-1.11 installer invokes a staged prepare child without exporting its
+  # --prefix argument. Recover that argument before preserving the old config.
+  if [[ -z "${VM_INIT_PREFIX:-}" && "${directory##*/}" == .vm-init.stage.* && -r "/proc/$PPID/cmdline" ]]; then
+    local argument previous=''
+    while IFS= read -r -d '' argument; do
+      if [[ "$previous" == --prefix ]]; then VM_INIT_PREFIX="$argument"; break; fi
+      previous="$argument"
+    done < "/proc/$PPID/cmdline"
+  fi
   if [[ "${directory##*/}" == modules && -f "${directory%/modules}/.vm-init-managed" ]]; then directory=${directory%/modules}; fi
   if [[ -f "$directory/.vm-init-managed" ]]; then
     local managed_bin managed_no_symlink
@@ -160,11 +169,32 @@ migrate_layout() {
 }
 
 preserve_legacy_config() {
+  local saved="$VM_INIT_STATE_DIR/legacy-install-config"
+  if [[ ! -e "$VM_INIT_CONFIG_DIR/vm-init.yml" && -f "$saved/config.yml" \
+      && -f "$saved/VERSION" && -f "$VM_INIT_PREFIX/VERSION" ]] \
+      && cmp -s "$saved/VERSION" "$VM_INIT_PREFIX/VERSION"; then
+    install -d -m 0700 "$VM_INIT_CONFIG_DIR" || return 1
+    install -m 0600 "$saved/config.yml" "$VM_INIT_CONFIG_DIR/vm-init.yml" || return 1
+  fi
   if [[ -f "$VM_INIT_PREFIX/vm-init.sh" && ! -L "$VM_INIT_PREFIX/vm-init.sh" \
       && -f "$VM_INIT_PREFIX/vm-init.yml" && ! -e "$VM_INIT_CONFIG_DIR/vm-init.yml" ]]; then
     install -d -m 0700 "$VM_INIT_CONFIG_DIR" || return 1
     install -m 0600 "$VM_INIT_PREFIX/vm-init.yml" "$VM_INIT_CONFIG_DIR/vm-init.yml" || return 1
   fi
+}
+
+preserve_staged_upgrade_config() {
+  [[ "${SCRIPT_DIR##*/}" == .vm-init.stage.* ]] || return 0
+  [[ -f "$VM_INIT_PREFIX/vm-init.sh" && -f "$VM_INIT_PREFIX/vm-init.yml" ]] || return 0
+  # The older installer replaces the entire prefix after prepare returns.
+  # Its inherited state directory lives outside that prefix and survives.
+  case "$VM_INIT_STATE_DIR/" in "$VM_INIT_PREFIX/"*)
+    log_fail 'This older installer would replace its state. Upgrade with the current scripts/install.sh instead.'; return 1 ;;
+  esac
+  local saved="$VM_INIT_STATE_DIR/legacy-install-config"
+  install -d -m 0700 "$saved" || return 1
+  install -m 0600 "$VM_INIT_PREFIX/vm-init.yml" "$saved/config.yml" || return 1
+  install -m 0600 "$SCRIPT_DIR/VERSION" "$saved/VERSION"
 }
 
 # Commit already validated code. Persistent data is never part of this swap.
@@ -183,7 +213,7 @@ install_app() (
     old_command=$(mktemp "$VM_INIT_PREFIX/.old-command.XXXXXX") || return 1
     cp -p "$command_path" "$old_command" || return 1
   elif [[ -L "$command_path" ]]; then old_target=$(readlink "$command_path"); fi
-  # shellcheck disable=SC2329 # EXIT trap
+  # shellcheck disable=SC2317,SC2329 # called by the EXIT trap
   cleanup_install_app() {
     local rc=$?
     if (( rc != 0 && committed )); then

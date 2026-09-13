@@ -119,3 +119,41 @@ SH
   run "$VM_INIT_BIN_DIR/vm-init" --version
   [ "$status" -eq 0 ]
 }
+
+@test "the old installer prepare-and-replace flow preserves custom configuration at a custom prefix" {
+  export VM_INIT_LEGACY_ROOT="$TEST_TMPDIR/legacy" VM_INIT_MIN_DISK_MB=0
+  mkdir -p "$VM_INIT_PREFIX"
+  echo '#!/usr/bin/env bash' > "$VM_INIT_PREFIX/vm-init.sh"
+  echo 1.10.1 > "$VM_INIT_PREFIX/VERSION"
+  printf 'users: [root]\napt: {enabled: false}\nshell: {enabled: false}\n' > "$VM_INIT_PREFIX/vm-init.yml"
+  cp "$VM_INIT_PREFIX/vm-init.yml" "$TEST_TMPDIR/expected.yml"
+  stage="$TEST_TMPDIR/.vm-init.stage.test"
+  cp -a "$TEST_TMPDIR/release" "$stage"
+  # Older installers pass --prefix in argv, but do not export it to prepare.
+  run env -u VM_INIT_PREFIX bash -c 'bash "$1/vm-init.sh" prepare; result=$?; exit "$result"' _ "$stage" --prefix "$VM_INIT_PREFIX"
+  [ "$status" -eq 0 ]
+  [ ! -d "$VM_INIT_PREFIX/config" ]
+  cmp "$VM_INIT_STATE_DIR/legacy-install-config/config.yml" "$TEST_TMPDIR/expected.yml"
+  # Match the old installer replacing its whole prefix after preparation.
+  rm -rf "$VM_INIT_PREFIX"
+  mv "$stage" "$VM_INIT_PREFIX"
+  chmod 0755 "$VM_INIT_PREFIX"
+  printf '%s\n0\n' "$VM_INIT_BIN_DIR" > "$VM_INIT_PREFIX/.vm-init-managed"
+  run "$VM_INIT_PREFIX/vm-init.sh" --no-log
+  [ "$status" -eq 0 ]
+  cmp "$VM_INIT_PREFIX/config/vm-init.yml" "$TEST_TMPDIR/expected.yml"
+  [ -x "$VM_INIT_PREFIX/bin/vm-init" ]
+}
+
+@test "prepare leaves legacy system configuration and recovery paths in place" {
+  export VM_INIT_LEGACY_ROOT="$TEST_TMPDIR/legacy"
+  mkdir -p "$VM_INIT_LEGACY_ROOT/etc/vm-init" "$VM_INIT_LEGACY_ROOT/var/lib/vm-init"
+  echo '{}' > "$VM_INIT_LEGACY_ROOT/etc/vm-init/vm-init.yml"
+  echo snapshot > "$VM_INIT_LEGACY_ROOT/var/lib/vm-init/snapshot"
+  run env -u VM_INIT_STATE_DIR -u VM_INIT_STATE_FILE "$VM_INIT_SH" prepare
+  [ "$status" -eq 0 ]
+  [ ! -L "$VM_INIT_LEGACY_ROOT/etc/vm-init" ]
+  [ ! -L "$VM_INIT_LEGACY_ROOT/var/lib/vm-init" ]
+  [ ! -e "$VM_INIT_PREFIX/config" ]
+  [ "$(cat "$VM_INIT_LEGACY_ROOT/var/lib/vm-init/snapshot")" = snapshot ]
+}

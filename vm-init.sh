@@ -2,9 +2,10 @@
 # vm-init.sh — Config-driven Ubuntu machine setup.
 
 set -euo pipefail
+VM_INIT_ORIGINAL_ARGS=("$@")
 
 # Resolve script directory, following symlinks so sourcing works whether we're
-# invoked as /opt/vm-init/vm-init.sh or via the /usr/local/sbin/vm-init symlink
+# invoked as /opt/vm-init/app/vm-init.sh or via the /usr/local/bin/vm-init symlink
 # that install.sh creates.
 _self="$0"
 if command -v readlink >/dev/null 2>&1; then
@@ -60,22 +61,14 @@ if ! declare -F _emit_default_config >/dev/null 2>&1; then
   }
 fi
 
-# Config precedence (without --config):
-#   1) /etc/vm-init/vm-init.yml (system-wide override)
-#   2) ./vm-init.yml (project/local override in current directory)
-#   3) <script dir>/vm-init.yml (default shipped with tarball install)
-#   4) embedded default (single-file bundle fallback)
-# Override everything explicitly with --config.
+# Resolve configuration after argument parsing, so informational commands need
+# neither a readable configuration nor installation directories.
 CONFIG_EXPLICIT=0
-VM_INIT_CONFIG_ORIGIN="shipped default"
-if [[ -f "/etc/vm-init/vm-init.yml" ]]; then
-  CONFIG="/etc/vm-init/vm-init.yml"
-  VM_INIT_CONFIG_ORIGIN="system configuration"
-elif [[ -f "$(pwd)/vm-init.yml" ]]; then
-  CONFIG="$(pwd)/vm-init.yml"
-  VM_INIT_CONFIG_ORIGIN="current directory"
-else
-  CONFIG="${SCRIPT_DIR}/vm-init.yml"
+CONFIG=""
+VM_INIT_CONFIG_ORIGIN='shipped default'
+if ! declare -F cli_action >/dev/null; then
+  # shellcheck source=modules/_cli.sh
+  source "${MODULES_DIR}/_cli.sh"
 fi
 
 VERSION_FILE="${SCRIPT_DIR}/VERSION"
@@ -320,7 +313,7 @@ update_local_checkout() {
 }
 
 run_update_cmd() {
-  local latest installer managed_bin=/usr/local/sbin managed_no_symlink=0
+  local latest installer managed_bin="$VM_INIT_BIN_DIR" managed_no_symlink="$VM_INIT_NO_SYMLINK"
   latest="$(latest_release_version || true)"
 
   case "${VM_INIT_RUN_MODE}" in
@@ -343,12 +336,12 @@ run_update_cmd() {
         # Avoid leaking vm-init's own VM_INIT_VERSION (e.g., "1.1.0") into
         # install.sh, and pin the exact release tag (e.g., "v1.1.0").
         env -u VM_INIT_VERSION VM_INIT_BIN_DIR="$managed_bin" VM_INIT_NO_SYMLINK="$managed_no_symlink" \
-          bash "$installer" --prefix "$SCRIPT_DIR" --version "$latest"
+          bash "$installer" --prefix "$VM_INIT_PREFIX" --version "$latest"
       else
         # Fallback to installer default ("latest"), without inheriting local
         # VM_INIT_VERSION that is not a release tag.
         env -u VM_INIT_VERSION VM_INIT_BIN_DIR="$managed_bin" VM_INIT_NO_SYMLINK="$managed_no_symlink" \
-          bash "$installer" --prefix "$SCRIPT_DIR"
+          bash "$installer" --prefix "$VM_INIT_PREFIX"
       fi
       return $?
       ;;
@@ -439,21 +432,14 @@ usage() {
 
   print_help_section "Usage:"
   echo -e "  sudo ${SCRIPT_NAME} [command] [options]"
-  echo '  setup              Choose an account and features, preview, then apply'
-  echo '  plan               Preview the selected configuration'
-  echo '  apply              Apply configuration (also the default command)'
-  echo '  status [--json]    Verify selected features and show their state'
-  echo '  repair dns|failed  Restore DNS offline, or retry the last failed modules'
-  echo '  confirm-firewall   Keep firewall changes from a new SSH session'
-  echo '  prepare            Install configuration tools before the first preview'
-  echo '  update             Update this vm-init installation'
+  cli_action_help
 
   print_help_section "Options:"
   echo -e "  ${_C_DIM}Selection${_C_RESET}"
-  _usage_opt "--config, -c <path>"    "Config file (default: /etc/vm-init/vm-init.yml, then ./vm-init.yml, then sibling vm-init.yml)"
-  _usage_opt "--user <list>" "Accounts to configure (comma-separated; default: invoking sudo user)"
+  _usage_opt "--config, -c <path>"    "Config file (default: $VM_INIT_CONFIG_DIR/vm-init.yml)"
+  _usage_opt "--user, -U <list>" "Accounts to configure (comma-separated; default: invoking sudo user)"
   _usage_opt "--all-users" "Explicitly configure root and every human account"
-  _usage_opt "--features <list>" "setup features: shell,docker,python,tools"
+  _usage_opt "--features <list>" "Choose features: shell,docker,python,tools"
   _usage_opt "--yes, -y" "Accept the setup plan for unattended setup"
   _usage_opt "--json" "Machine-readable status; diagnostics go to stderr"
   _usage_opt "--only <list>"      "Comma-separated module names to run (others skipped)"
@@ -469,14 +455,14 @@ usage() {
   _usage_opt "--force, -f"            "Reinstall/overwrite all tools"
   _usage_opt "--restore-config"       "Restore managed configuration to the selected YAML"
   _usage_opt "--no-upgrade"           "Skip update checks for already-installed tools (default is upgrade-aware)"
-  _usage_opt "--verbose"          "Show full command output (default: quiet)"
+  _usage_opt "--verbose, -v"          "Show full command output (default: quiet)"
   echo ""
   echo -e "  ${_C_DIM}Logging${_C_RESET}"
   _usage_opt "--no-log"           "Don't mirror output to a log file"
-  _usage_opt "--log-file <path>"  "Write log to <path> (default: /var/log/vm-init-<ts>.log)"
+  _usage_opt "--log-file <path>"  "Write log to <path> (default: $VM_INIT_LOG_DIR/vm-init-<run-id>.log)"
   echo ""
   echo -e "  ${_C_DIM}Info${_C_RESET}"
-  _usage_opt "--version"          "Print version and exit"
+  _usage_opt "--version, -V"          "Print version and exit"
   _usage_opt "--help, -h"         "Show this help"
 
   print_help_section "Modules:"
@@ -507,7 +493,7 @@ usage() {
 require_option_value() {
   local flag="$1"
   local value="${2-}"
-  if [[ -z "$value" || "$value" == --* ]]; then
+  if [[ -z "$value" || "$value" == -* ]]; then
     log_fail "Missing value for ${flag}"
     echo "" >&2
     usage >&2
@@ -515,53 +501,53 @@ require_option_value() {
   fi
 }
 
-if [[ $# -gt 0 && "$1" != -* ]]; then
-  VM_INIT_COMMAND="$1"; shift
-  case "$VM_INIT_COMMAND" in
-    setup) VM_INIT_SETUP=1 ;;
-    plan) VM_INIT_DRY_RUN=1 ;;
-    apply) ;;
-    status) VM_INIT_VERIFY=1 ;;
-    update) VM_INIT_DO_UPDATE=1 ;;
-    prepare) VM_INIT_PREPARE=1 ;;
-    confirm-firewall) VM_INIT_REPAIR=firewall ;;
-    repair)
-      VM_INIT_REPAIR="${1:-}"; [[ $# -eq 0 ]] || shift
-      case "$VM_INIT_REPAIR" in dns|failed) ;; *) log_fail 'Usage: vm-init repair dns|failed'; exit 1 ;; esac ;;
-    *) log_fail "Unknown command: $VM_INIT_COMMAND"; usage >&2; exit 1 ;;
-  esac
-fi
-
 while [[ $# -gt 0 ]]; do
+  if action=$(cli_action "$1"); then
+    shift
+    case "$action" in
+      help) if [[ "$VM_INIT_REPAIR" == dns ]]; then recover_dns_usage; else usage; fi; exit 0 ;;
+      version) echo "vm-init ${VM_INIT_VERSION}"; exit 0 ;;
+    esac
+    cli_select_action "$action" || exit 1
+    if [[ "$action" == repair ]]; then
+      if [[ -n "$VM_INIT_REPAIR" && "$VM_INIT_REPAIR" != "${1:-}" ]]; then
+        log_fail 'Repair targets are mutually exclusive'; exit 1
+      fi
+      VM_INIT_REPAIR="${1:-}"; [[ $# -eq 0 ]] || shift
+      case "$VM_INIT_REPAIR" in dns|failed) ;; *) log_fail 'Usage: vm-init repair dns|failed'; exit 1 ;; esac
+    fi
+    continue
+  fi
   case "$1" in
-    --config|-c)             require_option_value "$1" "${2-}"; CONFIG="$2"; CONFIG_EXPLICIT=1; VM_INIT_CONFIG_ORIGIN="explicit --config"; shift 2 ;;
-    --only)                   require_option_value "$1" "${2-}"; VM_INIT_ONLY="$2"; shift 2 ;;
-    --skip)                   require_option_value "$1" "${2-}"; VM_INIT_SKIP="$2"; shift 2 ;;
-    --dry-run)                export VM_INIT_DRY_RUN=1; shift ;;
-    --verify)                 VM_INIT_VERIFY=1; shift ;;
-    --fail-fast)              VM_INIT_FAIL_FAST=1; shift ;;
-    --update|-u)             VM_INIT_DO_UPDATE=1; shift ;;
-    --list-modules|-l)       VM_INIT_LIST_MODULES=1; shift ;;
-    --write-default-config|-w) VM_INIT_WRITE_DEFAULT_CONFIG=1; shift ;;
-    --force|-f)              export VM_INIT_FORCE=1; shift ;;
-    --restore-config)        export VM_INIT_RESTORE_CONFIG=1; shift ;;
-    --no-upgrade)             export VM_INIT_NO_UPGRADE=1; shift ;;
-    --verbose)                export VM_INIT_VERBOSE=1; shift ;;
-    --no-log)                 export VM_INIT_NO_LOG=1; shift ;;
-    --log-file)               require_option_value "$1" "${2-}"; LOG_FILE="$2"; LOG_FILE_EXPLICIT=1; shift 2 ;;
-    --user) require_option_value "$1" "${2-}"; VM_INIT_USER_OPTION="$2"; shift 2 ;;
+    --config|-c) require_option_value "$1" "${2-}"; CONFIG="$2"; CONFIG_EXPLICIT=1; VM_INIT_CONFIG_ORIGIN='explicit --config'; shift 2 ;;
+    --only) require_option_value "$1" "${2-}"; VM_INIT_ONLY="$2"; shift 2 ;;
+    --skip) require_option_value "$1" "${2-}"; VM_INIT_SKIP="$2"; shift 2 ;;
+    --fail-fast) VM_INIT_FAIL_FAST=1; shift ;;
+    --force|-f) export VM_INIT_FORCE=1; shift ;;
+    --restore-config) export VM_INIT_RESTORE_CONFIG=1; shift ;;
+    --no-upgrade) export VM_INIT_NO_UPGRADE=1; shift ;;
+    --verbose|-v) export VM_INIT_VERBOSE=1; shift ;;
+    --no-log) export VM_INIT_NO_LOG=1; shift ;;
+    --log-file) require_option_value "$1" "${2-}"; LOG_FILE="$2"; LOG_FILE_EXPLICIT=1; shift 2 ;;
+    --user|-U) require_option_value "$1" "${2-}"; VM_INIT_USER_OPTION+="${VM_INIT_USER_OPTION:+,}$2"; shift 2 ;;
     --all-users) VM_INIT_ALL_USERS=1; shift ;;
     --yes|-y) VM_INIT_YES=1; shift ;;
     --features) require_option_value "$1" "${2-}"; VM_INIT_FEATURES="$2"; shift 2 ;;
     --json) VM_INIT_JSON=1; shift ;;
-    --prepare) VM_INIT_PREPARE=1; shift ;;
     --with-fallback) VM_INIT_RECOVERY_ARGS+=("$1"); shift ;;
     --iface|--fallback) require_option_value "$1" "${2-}"; VM_INIT_RECOVERY_ARGS+=("$1" "$2"); shift 2 ;;
-    --version)                echo "vm-init ${VM_INIT_VERSION}"; exit 0 ;;
-    --help|-h)                if [[ "$VM_INIT_REPAIR" == dns ]]; then recover_dns_usage; else usage; fi; exit 0 ;;
-    *)                        echo -e "${_C_RED}${_SYM_FAIL}${_C_RESET} Unknown option: ${_C_BOLD}$1${_C_RESET}" >&2; echo "" >&2; usage >&2; exit 1 ;;
+    *) log_fail "Unknown option: $1"; usage >&2; exit 1 ;;
   esac
 done
+case "$VM_INIT_COMMAND" in
+  plan) VM_INIT_DRY_RUN=1 ;;
+  status) VM_INIT_VERIFY=1 ;;
+  update) VM_INIT_DO_UPDATE=1 ;;
+  list) VM_INIT_LIST_MODULES=1 ;;
+  write) VM_INIT_WRITE_DEFAULT_CONFIG=1 ;;
+  prepare) VM_INIT_PREPARE=1 ;;
+  firewall) VM_INIT_REPAIR=firewall ;;
+esac
 
 # Validate --only / --skip names against known modules
 validate_module_filters() {
@@ -613,7 +599,14 @@ fi
 if (( ${#VM_INIT_RECOVERY_ARGS[@]} > 0 )) && [[ "$VM_INIT_REPAIR" != dns ]]; then
   log_fail 'Recovery options require repair dns'; exit 1
 fi
-if [[ -n "$VM_INIT_FEATURES" && "$VM_INIT_SETUP" != 1 ]]; then log_fail '--features requires setup'; exit 1; fi
+if [[ -n "$VM_INIT_FEATURES" ]]; then
+  case "$VM_INIT_COMMAND" in ''|apply|setup|plan) VM_INIT_SETUP=1 ;; *) log_fail '--features requires run, setup, or plan'; exit 1 ;; esac
+  IFS=',' read -ra features <<< "$VM_INIT_FEATURES"
+  for feature in "${features[@]}"; do
+    case "$feature" in shell|docker|python|tools) ;; *) log_fail "Unknown feature: $feature"; exit 1 ;; esac
+  done
+  case ",$VM_INIT_FEATURES," in *,,*) log_fail 'Feature names must not be empty'; exit 1 ;; esac
+fi
 if [[ "$VM_INIT_JSON" == 1 ]]; then exec 3>&1; exec 1>&2; fi
 if [[ "$VM_INIT_REPAIR" == dns ]]; then recover_dns_main "${VM_INIT_RECOVERY_ARGS[@]}"; exit $?; fi
 if [[ "$VM_INIT_REPAIR" == firewall ]]; then
@@ -625,13 +618,15 @@ if [[ "$VM_INIT_REPAIR" == failed ]]; then load_failed_run || exit 1; fi
 if [[ "$VM_INIT_PREPARE" == 1 ]]; then
   [[ $EUID -eq 0 ]] || { log_fail 'Run as root: sudo vm-init prepare'; exit 1; }
   if [[ ! -f /etc/os-release ]] || ! grep -qi ubuntu /etc/os-release; then log_fail 'This script only supports Ubuntu'; exit 1; fi
-  acquire_run_lock
+  # Preparation must leave legacy paths in place: old installers call this
+  # command before replacing the entire application prefix.
+  validate_install_prefix && acquire_run_lock && preserve_staged_upgrade_config || exit 1
   bootstrap_config_tools
   exit $?
 fi
 
 if [[ "$VM_INIT_DO_UPDATE" == "1" ]]; then
-  if [[ $EUID -eq 0 ]]; then acquire_run_lock || exit 1; fi
+  if [[ $EUID -eq 0 ]]; then validate_install_prefix && acquire_run_lock && migrate_layout || exit 1; fi
   if ! run_update_cmd; then
     exit 1
   fi
@@ -665,13 +660,40 @@ write_default_config_cmd() {
   echo -e "  ${_C_BOLD}Next:${_C_RESET} edit ${_C_CYAN}${target}${_C_RESET}, then run:"
   echo -e "    ${_C_CYAN}$(shell_command sudo "$VM_INIT_EXECUTABLE" apply --config "$target")${_C_RESET}"
   echo -e "  Or move it to a standard location that ${SCRIPT_NAME} auto-picks-up:"
-  echo -e "    ${_C_CYAN}sudo install -Dm 0644 ${target} /etc/vm-init/vm-init.yml${_C_RESET}"
+  echo -e "    ${_C_CYAN}sudo install -Dm 0600 ${target} ${VM_INIT_CONFIG_DIR}/vm-init.yml${_C_RESET}"
   return 0
 }
 
 if [[ "$VM_INIT_WRITE_DEFAULT_CONFIG" == "1" ]]; then
   write_default_config_cmd
   exit $?
+fi
+
+select_config || exit 1
+if [[ "$VM_INIT_COMMAND" == '' || "$VM_INIT_COMMAND" == apply || "$VM_INIT_COMMAND" == setup ]]; then
+  installed_command="$VM_INIT_PREFIX/bin/vm-init"
+  if [[ ! -x "$installed_command" && -f "$VM_INIT_PREFIX/.vm-init-managed" ]]; then
+    installed_command="$VM_INIT_PREFIX/vm-init.sh"
+  fi
+  if [[ "${VM_INIT_BUNDLED:-0}" == 1 && -x "$installed_command" \
+      && ! "$VM_INIT_RESOLVED_EXECUTABLE" -ef "$installed_command" ]]; then
+    exec env -u VM_INIT_BUNDLED -u VM_INIT_BUNDLED_VERSION -u VM_INIT_VERSION \
+      "$installed_command" "${VM_INIT_ORIGINAL_ARGS[@]}"
+  fi
+  if [[ "$CONFIG_EXPLICIT" != 1 && "$VM_INIT_CONFIG_ORIGIN" == 'shipped default' ]]; then VM_INIT_SETUP=1; fi
+fi
+if [[ "$VM_INIT_DRY_RUN" != 1 && "$VM_INIT_VERIFY" != 1 && "$VM_INIT_LIST_MODULES" != 1 ]]; then
+  [[ $EUID -eq 0 ]] || { log_fail "Run this script as root (sudo $0)"; exit 1; }
+  if [[ ! -f /etc/os-release ]] || ! grep -qi ubuntu /etc/os-release; then log_fail 'This script only supports Ubuntu'; exit 1; fi
+  if [[ "$VM_INIT_SETUP" == 1 && "$VM_INIT_YES" != 1 && ! -t 0 ]]; then
+    log_fail 'First-run configuration needs a terminal. For automation use: sudo vm-init --yes --user root --features shell'
+    exit 1
+  fi
+  if [[ "$CONFIG_EXPLICIT" == 1 && "$VM_INIT_SETUP" != 1 && ! -f "$CONFIG" ]]; then log_fail "Config file not found: $CONFIG"; exit 1; fi
+  validate_install_prefix && acquire_run_lock && migrate_layout && preserve_legacy_config && migrate_flat_app || exit 1
+  select_config || exit 1
+  if [[ "${VM_INIT_BUNDLED:-0}" == 1 ]]; then install_running_bundle || exit 1; fi
+  bootstrap_config_tools || exit 1
 fi
 
 # ---------------------------------------------------------------------------
@@ -968,9 +990,9 @@ fi
 if [[ "$VM_INIT_NO_LOG" != "1" && "$VM_INIT_DRY_RUN" != "1" ]] \
    && [[ "$VM_INIT_VERIFY" != "1" || "$LOG_FILE_EXPLICIT" == "1" ]]; then
   if [[ -z "$LOG_FILE" ]]; then
-    LOG_FILE="/var/log/vm-init-$(date +%Y%m%d-%H%M%S).log"
+    LOG_FILE="$VM_INIT_LOG_DIR/vm-init-${VM_INIT_RUN_ID}.log"
   fi
-  if mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null && : > "$LOG_FILE" 2>/dev/null; then
+  if mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null && (umask 077; : > "$LOG_FILE") 2>/dev/null; then
     exec > >(tee -a "$LOG_FILE") 2>&1
   else
     LOG_FILE=""
@@ -1063,7 +1085,6 @@ fi
 # installation and explain the single preparation command.
 if [[ "$VM_INIT_DRY_RUN" != 1 && "$VM_INIT_VERIFY" != 1 ]]; then
   acquire_run_lock || exit 1
-  bootstrap_config_tools || exit 1
   log_step 'Checking for background apt/dpkg activity'
   # shellcheck disable=SC2119 # default system lock paths
   wait_apt_lock || exit 1
