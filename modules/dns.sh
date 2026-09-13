@@ -72,7 +72,7 @@ install_dnsproxy_binary() {
 
 dns_upstream_from_config() {
   local server
-  server=$(yq '.dns.server // "https://base.dns.mullvad.net/dns-query"' "$CONFIG")
+  server=$(yq -r '.dns.server // "https://base.dns.mullvad.net/dns-query"' "$CONFIG")
 
   if [[ "$server" != https://* && "$server" != tls://* ]]; then
     log_fail "dns.server must be a full URL starting with https:// (DoH) or tls:// (DoT)"
@@ -106,7 +106,7 @@ ensure_systemd_resolved() {
 }
 
 install_dns_pin_helper() {
-  cat > /usr/local/sbin/vm-init-dns-pin <<'PIN_EOF'
+  cat > "${VM_INIT_DNS_ROOT:-}/usr/local/sbin/vm-init-dns-pin" <<'PIN_EOF'
 #!/bin/sh
 # vm-init-dns-pin -- Pin default-route links to the local dnsproxy.
 # Installed by modules/dns.sh and run once on every boot via
@@ -128,7 +128,7 @@ for iface in $links; do
   resolvectl domain "$iface" '~.' >/dev/null 2>&1 || true
 done
 PIN_EOF
-  chmod 0755 /usr/local/sbin/vm-init-dns-pin
+  chmod 0755 "${VM_INIT_DNS_ROOT:-}/usr/local/sbin/vm-init-dns-pin"
 }
 
 dnsproxy_listening_on() {
@@ -139,7 +139,7 @@ dnsproxy_listening_on() {
       | awk -v addr="$addr" -v port="$port" '
         {
           for (i = 1; i <= NF; i++) {
-            if ($i == addr ":" port || $i == "0.0.0.0:" port || $i == "*:" port) {
+            if ($i == addr ":" port || $i == "[" addr "]:" port || $i == "0.0.0.0:" port || $i == "*:" port) {
               found = 1
               exit
             }
@@ -166,7 +166,7 @@ wait_for_dnsproxy() {
 
 verify_doh_resolves() {
   for _ in 1 2 3 4 5; do
-    if getent hosts example.com >/dev/null 2>&1; then
+    if dig +time=2 +tries=1 +short @"${1:-127.0.0.1}" -p "${2:-5353}" example.com A 2>/dev/null | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"; then
       return 0
     fi
     sleep 0.5
@@ -174,42 +174,25 @@ verify_doh_resolves() {
   return 1
 }
 
-install_dns() {
-  require_commands dpkg jq systemctl getent ss || return 1
-
-  if ! install_dnsproxy_binary; then
-    log_warn "DNS module skipped — dnsproxy binary could not be installed"
-    log_warn "DoH/DoT is NOT active. DNS uses system defaults."
-    log_info "Re-run with --force after resolving the issue, or set dns.enabled: false"
-    return 1
-  fi
-
-  if ! ensure_systemd_resolved; then
-    log_warn "DNS module skipped — systemd-resolved is unavailable"
-    log_warn "DoH/DoT is NOT active. DNS uses system defaults."
-    return 1
-  fi
-
+_configure_dns() {
   local upstream listen_address listen_port
   if ! upstream=$(dns_upstream_from_config); then
     log_warn "DNS module skipped — invalid dns.server in config"
     return 1
   fi
-  listen_address=$(yq '.dns.listen_address // "127.0.0.1"' "$CONFIG")
-  listen_port=$(yq '.dns.listen_port // 5353' "$CONFIG")
+  listen_address=$(yq -r '.dns.listen_address // "127.0.0.1"' "$CONFIG")
+  listen_port=$(yq -r '.dns.listen_port // 5353' "$CONFIG")
 
   # systemd-resolved DNS= syntax: "address:port" (colon for port, hash is SNI).
-  local resolved_dns_target="${listen_address}"
-  if [[ "$listen_port" != "53" ]]; then
-    resolved_dns_target="${listen_address}:${listen_port}"
-  fi
+  local resolved_dns_target
+  resolved_dns_target=$(dns_target "$listen_address" "$listen_port")
 
   local bootstrap_flags=""
   local bs_line
   while IFS= read -r bs_line; do
     [[ -z "$bs_line" ]] && continue
     bootstrap_flags+=" --bootstrap ${bs_line}"
-  done <<< "$(yq '.dns.bootstrap // ["9.9.9.9", "149.112.112.112"] | .[]' "$CONFIG")"
+  done <<< "$(yq -r '.dns.bootstrap // ["9.9.9.9", "149.112.112.112"] | .[]' "$CONFIG")"
 
   log_step "Writing dnsproxy service"
   # Ordering rationale (this is the bit that breaks DNS on reboot if wrong):
@@ -234,7 +217,7 @@ install_dns() {
   #                                      reached very late at boot which is
   #                                      what made resolved fall back to a
   #                                      dead :5353 the first time around.
-  cat > /etc/systemd/system/dnsproxy.service <<EOF
+  cat > "${VM_INIT_DNS_ROOT:-}/etc/systemd/system/dnsproxy.service" <<EOF
 [Unit]
 Description=DNS over HTTPS/TLS proxy (dnsproxy)
 Documentation=https://github.com/AdguardTeam/dnsproxy
@@ -253,9 +236,10 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 
+  rm -f "${VM_INIT_DNS_ROOT:-}/etc/systemd/resolved.conf.d/00-recovery-dns.conf"
   log_step "Pointing systemd-resolved to dnsproxy"
-  mkdir -p /etc/systemd/resolved.conf.d
-  cat > /etc/systemd/resolved.conf.d/99-vm-init-dnsproxy.conf <<EOF
+  mkdir -p "${VM_INIT_DNS_ROOT:-}/etc/systemd/resolved.conf.d"
+  cat > "${VM_INIT_DNS_ROOT:-}/etc/systemd/resolved.conf.d/99-vm-init-dnsproxy.conf" <<EOF
 [Resolve]
 DNS=${resolved_dns_target}
 FallbackDNS=
@@ -268,8 +252,8 @@ EOF
   # systemd-resolved is activated very early, in a different transaction, so
   # there is no shared activation for the ordering to apply to. Pulling
   # dnsproxy in via Wants= here puts both units in the same transaction.
-  mkdir -p /etc/systemd/system/systemd-resolved.service.d
-  cat > /etc/systemd/system/systemd-resolved.service.d/10-vm-init-dnsproxy.conf <<EOF
+  mkdir -p "${VM_INIT_DNS_ROOT:-}/etc/systemd/system/systemd-resolved.service.d"
+  cat > "${VM_INIT_DNS_ROOT:-}/etc/systemd/system/systemd-resolved.service.d/10-vm-init-dnsproxy.conf" <<EOF
 [Unit]
 Wants=dnsproxy.service
 After=dnsproxy.service
@@ -277,7 +261,7 @@ EOF
 
   log_step "Installing per-link DNS pin helper"
   install_dns_pin_helper
-  cat > /etc/systemd/system/vm-init-dns-pin.service <<EOF
+  cat > "${VM_INIT_DNS_ROOT:-}/etc/systemd/system/vm-init-dns-pin.service" <<EOF
 [Unit]
 Description=Pin per-link DNS to local dnsproxy (vm-init)
 Documentation=https://github.com/wagga40/vm-init
@@ -294,7 +278,7 @@ WantedBy=multi-user.target
 EOF
 
   log_step "Ensuring resolv.conf uses the stub resolver"
-  ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+  ln -sfn /run/systemd/resolve/stub-resolv.conf "${VM_INIT_DNS_ROOT:-}/etc/resolv.conf"
 
   if ! systemctl daemon-reload >/dev/null 2>&1; then
     log_warn "systemd daemon-reload failed after writing DNS units"
@@ -315,7 +299,7 @@ EOF
     log_info "Debug: systemctl status dnsproxy --no-pager"
     log_info "Debug: journalctl -u dnsproxy -n 30 --no-pager"
     log_info "Debug: ss -lunp | grep ${listen_port}"
-    log_info "Recovery: modules/recover-dns.sh --with-fallback"
+    log_info "Recovery: sudo vm-init repair dns --with-fallback"
     return 1
   fi
 
@@ -333,15 +317,15 @@ EOF
     return 1
   fi
 
-  if verify_doh_resolves; then
+  if verify_doh_resolves "$listen_address" "$listen_port"; then
     log_ok "dnsproxy configured and resolving via ${upstream}"
-    vm_init_note "DNS now goes through dnsproxy. If it breaks: sudo vm-init-recover-dns --with-fallback"
+    vm_init_note "DNS now goes through dnsproxy. If it breaks: sudo vm-init repair dns --with-fallback"
   else
     log_warn "dnsproxy is listening but DNS resolution failed"
     log_info "Debug: resolvectl status"
     log_info "Debug: resolvectl query example.com"
     log_info "Debug: journalctl -u dnsproxy -n 30 --no-pager"
-    log_info "Recovery: modules/recover-dns.sh --with-fallback"
+    log_info "Recovery: sudo vm-init repair dns --with-fallback"
     return 1
   fi
 }
@@ -349,12 +333,12 @@ EOF
 # Post-install verification. Reuses the helpers install_dns already relies on,
 # so the check and the install agree on what "working" means.
 verify_dns() {
-  require_commands systemctl getent || return 1
+  require_commands systemctl getent ss dig resolvectl || return 1
 
   local listen_address listen_port upstream rc=0
-  listen_address=$(yq '.dns.listen_address // "127.0.0.1"' "$CONFIG")
-  listen_port=$(yq '.dns.listen_port // 5353' "$CONFIG")
-  upstream=$(yq '.dns.server // "<unset>"' "$CONFIG")
+  listen_address=$(yq -r '.dns.listen_address // "127.0.0.1"' "$CONFIG")
+  listen_port=$(yq -r '.dns.listen_port // 5353' "$CONFIG")
+  upstream=$(dns_upstream_from_config)
 
   if ! is_installed dnsproxy; then
     log_fail "dnsproxy is not installed"
@@ -376,13 +360,88 @@ verify_dns() {
     rc=1
   fi
 
-  if verify_doh_resolves; then
-    log_ok "name resolution works via ${upstream}"
+  if ! dns_verify_routing "$listen_address" "$listen_port" "$upstream"; then rc=1; fi
+  if verify_doh_resolves "$listen_address" "$listen_port"; then
+    log_ok "direct query to the configured DNS proxy succeeds"
   else
     log_fail "name resolution failed"
-    log_info "Recovery: sudo vm-init-recover-dns --with-fallback"
+    log_info "Recovery: sudo vm-init repair dns --with-fallback"
     rc=1
   fi
 
   return "$rc"
 }
+
+# Use brackets for an IPv6 resolver with a non-default port.
+dns_target() {
+  local addr="$1" port="$2"
+  if [[ "$port" == 53 ]]; then printf '%s\n' "$addr"
+  elif [[ "$addr" == *:* ]]; then printf '[%s]:%s\n' "$addr" "$port"
+  else printf '%s:%s\n' "$addr" "$port"; fi
+}
+
+dns_verify_routing() {
+  local addr="$1" port="$2" upstream="$3" target unit dns domains rc=0
+  target=$(dns_target "$addr" "$port")
+  unit=$(systemctl show dnsproxy --property=ExecStart --value) || return 1
+  if [[ "$unit" != *"--upstream=${upstream} "* || "$unit" != *"--listen=${addr} "* || "$unit" != *"--port=${port} "* ]]; then
+    log_fail 'Running dnsproxy service configuration differs from the requested upstream or listener'
+    rc=1
+  fi
+  if ! systemctl is-active --quiet systemd-resolved; then
+    log_fail 'systemd-resolved is not active'; rc=1
+  fi
+  if [[ "$(readlink "${VM_INIT_DNS_ROOT:-}/etc/resolv.conf")" != /run/systemd/resolve/stub-resolv.conf ]]; then
+    log_fail 'resolv.conf does not use the systemd-resolved stub'; rc=1
+  fi
+  dns=$(resolvectl dns) || return 1
+  domains=$(resolvectl domain) || return 1
+  if ! awk -v target="$target" '$1 == "Global:" && NF == 2 && $2 == target { found=1 } END { exit !found }' <<< "$dns"; then
+    log_fail 'Effective global DNS differs from the local proxy'; rc=1
+  fi
+  local iface
+  while read -r iface; do
+    [[ -n "$iface" ]] || continue
+    if ! awk -v iface="($iface):" -v target="$target" '$3 == iface && NF == 4 && $4 == target { found=1 } END { exit !found }' <<< "$dns" \
+       || ! awk -v iface="($iface):" '$3 == iface { for(i=4;i<=NF;i++) if($i == "~.") found=1 } END { exit !found }' <<< "$domains"; then
+      log_fail "DNS routing on ${iface} is not pinned to the local proxy"; rc=1
+    fi
+  done < <({ ip -4 route show default; ip -6 route show default; } | awk '/^default / { for(i=1;i<NF;i++) if($i == "dev") print $(i+1) }' | sort -u)
+  if getent hosts example.com >/dev/null 2>&1; then log_ok 'System name resolution works'
+  else log_fail 'System name resolution failed'; rc=1; fi
+  return "$rc"
+}
+
+install_dns() (
+  set -e
+  require_commands dpkg jq systemctl getent ss || return 1
+  mkdir -p "$VM_INIT_STATE_DIR"
+  snapshot="" committed=0
+  snapshot=$(mktemp -d "$VM_INIT_STATE_DIR/dns-transaction.XXXXXX")
+  dns_save_state "$snapshot" || { rm -rf "$snapshot"; return 1; }
+  trap '
+    rc=$?
+    if [[ "$committed" != 1 ]]; then
+      log_warn "DNS setup failed; restoring the previous configuration"
+      if ! dns_restore_state "$snapshot"; then
+        log_fail "Automatic DNS restoration failed; backup retained at $snapshot"
+        exit 1
+      fi
+    fi
+    rm -rf "$snapshot"
+    exit "$rc"
+  ' EXIT
+  if ! install_dnsproxy_binary; then
+    log_fail 'DoH/DoT is NOT active: dnsproxy could not be installed'
+    return 1
+  fi
+  ensure_systemd_resolved
+  if ! command -v dig >/dev/null; then run_quiet apt_get install -y -q dnsutils; fi
+  _configure_dns
+  dns_verify_routing "$(yq_get '.dns.listen_address' 127.0.0.1 "$CONFIG")" \
+    "$(yq_get '.dns.listen_port' 5353 "$CONFIG")" "$(dns_upstream_from_config)"
+  if [[ ! -d "$VM_INIT_STATE_DIR/dns-original" ]]; then
+    cp -a "$snapshot" "$VM_INIT_STATE_DIR/dns-original"
+  fi
+  committed=1
+)

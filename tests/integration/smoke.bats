@@ -76,7 +76,7 @@ teardown() {
   trap 'rm -rf "$test_root"' RETURN
 
   cp "$VM_INIT_SH" "$test_root/vm-init.sh"
-  cp "$VM_INIT_COMMON_SH" "$test_root/modules/_common.sh"
+  cp "$VM_INIT_REPO_ROOT"/modules/_*.sh "$test_root/modules/"
   cp "$VM_INIT_DEFAULT_CONFIG" "$test_root/vm-init.yml"
   cp "$VM_INIT_REPO_ROOT/VERSION" "$test_root/VERSION"
 

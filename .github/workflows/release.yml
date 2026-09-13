@@ -52,6 +52,11 @@ jobs:
       - name: Build single-file bundle
         run: task build-single
 
+      - name: Verify release artifacts
+        run: |
+          task verify
+          task verify-single
+
       - name: Prepare release assets (unversioned filenames)
         run: |
           set -euo pipefail
@@ -83,25 +88,17 @@ jobs:
           {
             echo "## vm-init ${tag}"
             echo ""
-            echo "### Install (single-file, recommended)"
+            echo "### Install"
             echo ""
             echo '```bash'
-            echo "curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/vm-init \\"
-            echo "  -o /usr/local/sbin/vm-init && sudo chmod +x /usr/local/sbin/vm-init"
-            echo "sudo vm-init --dry-run                  # preview with the embedded default"
-            echo "sudo vm-init                            # run"
-            echo ""
-            echo "# Optional: materialize the default config so you can edit it."
-            echo "vm-init --write-default-config          # writes ./vm-init.yml (no sudo)"
-            echo "sudo vm-init --config \"\$(pwd)/vm-init.yml\""
+            echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/scripts/install.sh | sudo bash"
+            echo "sudo vm-init setup"
+            echo "sudo vm-init status"
             echo '```'
             echo ""
-            echo "### Install (tarball)"
-            echo ""
-            echo '```bash'
-            echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/scripts/install.sh \\"
-            echo "  | sudo bash"
-            echo '```'
+            echo "The installer prepares configuration tools and verifies the release tarball."
+            echo "Standalone bundles also include offline recovery: sudo vm-init repair dns."
+            echo "See README.md for checksum-verified single-file installation, account selection, and automation."
             echo ""
             echo "### Checksums"
             echo ""

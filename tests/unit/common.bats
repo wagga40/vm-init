@@ -311,6 +311,9 @@ EOF
   source "${VM_INIT_REPO_ROOT}/modules/dns.sh"
   require_commands() { return 0; }
   install_dnsproxy_binary() { return 1; }
+  export VM_INIT_STATE_DIR="$TEST_TMPDIR/state"
+  dns_save_state() { return 0; }
+  dns_restore_state() { return 0; }
 
   run install_dns
 
@@ -336,14 +339,18 @@ EOF
 @test "install_fisher_tide: returns non-zero when non-root fish setup fails" {
   # shellcheck source=/dev/null
   source "${VM_INIT_REPO_ROOT}/modules/shell.sh"
+  run_as_user() { return 0; }
   yq_get() { echo true; }
   run_quiet() {
     if [[ "$1" == "download_file" ]]; then
+      touch "$3"
       return 0
     fi
     return 1
   }
 
+  chown() { return 0; }
+  id() { echo staff; }
   run install_fisher_tide alice "$TEST_TMPDIR/home"
 
   [ "$status" -ne 0 ]
@@ -390,67 +397,42 @@ EOF
   [[ "$output" != *"installed-for:alice"* ]]
 }
 
-@test "install_shell: a fish command cannot swallow the remaining user list" {
-  # Regression: fisher reads plugin names from stdin when it is not a tty, so
-  # inside `while read ... < <(human_users)` it consumed the next user's line
-  # and every account after the first was skipped.
-  # shellcheck source=/dev/null
-  source "${VM_INIT_REPO_ROOT}/modules/shell.sh"
-  yq() {
-    case "$1" in
-      ".shell.default_shell"*) echo env ;;
-      *) return 0 ;;
-    esac
-  }
-  yq_get() {
-    case "$1" in
-      ".shell.fisher") echo true ;;
-      *) echo false ;;
-    esac
-  }
+mock_shell_install() {
+  export CONFIG="$TEST_TMPDIR/shell.yml"
+  export VM_INIT_SHELL_PATH=/usr/bin/env
+  export VM_INIT_TARGET_USERS='root alice bob'
+  printf 'shell: {default_shell: fish, fisher: true, tide: false, aliases: {}}\n' > "$CONFIG"
   require_commands() { return 0; }
-  human_users() { printf 'alice:%s\nbob:%s\n' "$TEST_TMPDIR/alice" "$TEST_TMPDIR/bob"; }
-  usermod() { return 0; }
+  shell_required_packages() { echo fish; }
+  render_shell_config() { echo '# managed'; }
+  run_as_user() { return 0; }
+  target_users() { printf 'root:%s\nalice:%s\nbob:%s\n' "$TEST_TMPDIR/root" "$TEST_TMPDIR/alice" "$TEST_TMPDIR/bob"; }
+  fish() { return 0; }
+  install() { return 0; }
+  chown() { return 0; }
   chsh() { return 0; }
+  id() { echo staff; }
+  run_quiet() { return 0; }
+}
+
+@test "install_shell: a fish command cannot swallow the remaining user list" {
+  source "$VM_INIT_REPO_ROOT/modules/shell.sh"
+  mock_shell_install
   fisher_present_for() { return 0; }
-  # Stand in for fisher: reads a line from whatever stdin it is handed
-  # (bounded, so the leak shows up as a failed assertion, not a hang).
   run_quiet() { read -r -t 1 _leaked || true; }
-
   run install_shell
-
   [ "$status" -eq 0 ]
   [[ "$output" == *"Updating Fisher plugins (alice)"* ]]
   [[ "$output" == *"Updating Fisher plugins (bob)"* ]]
 }
 
 @test "install_shell: installs fisher for a user who lacks it even when root has it" {
-  # Regression: presence used to be probed only for root, so a user without
-  # fisher took the update path and failed with "Unknown command: fisher".
-  # shellcheck source=/dev/null
-  source "${VM_INIT_REPO_ROOT}/modules/shell.sh"
-  yq() {
-    case "$1" in
-      ".shell.default_shell"*) echo env ;;
-      *) return 0 ;;
-    esac
-  }
-  yq_get() {
-    case "$1" in
-      ".shell.fisher") echo true ;;
-      *) echo false ;;
-    esac
-  }
-  require_commands() { return 0; }
-  human_users() { echo "alice:${TEST_TMPDIR}/home"; }
-  usermod() { return 0; }
-  chsh() { return 0; }
-  fisher_present_for() { [[ "$1" == "root" ]]; }
+  source "$VM_INIT_REPO_ROOT/modules/shell.sh"
+  mock_shell_install
+  fisher_present_for() { [[ "$1" == root ]]; }
   install_fisher_tide() { echo "installed-for:$1"; }
   run_fish_as() { echo "ran:$1:$2"; }
-
   run install_shell
-
   [ "$status" -eq 0 ]
   [[ "$output" == *"installed-for:alice"* ]]
   [[ "$output" == *"ran:root:fisher update"* ]]
@@ -458,25 +440,13 @@ EOF
 }
 
 @test "install_shell: fails when changing a human user's shell fails" {
-  # shellcheck source=/dev/null
-  source "${VM_INIT_REPO_ROOT}/modules/shell.sh"
-  yq() {
-    case "$1" in
-      ".shell.default_shell"*) echo env ;;
-      ".shell.aliases"*) return 0 ;;
-      *) return 0 ;;
-    esac
-  }
-  yq_get() { echo false; }
-  require_commands() { return 0; }
-  human_users() { echo "alice:${TEST_TMPDIR}/home"; }
-  usermod() { return 0; }
-  chsh() { return 1; }
-
+  source "$VM_INIT_REPO_ROOT/modules/shell.sh"
+  mock_shell_install
+  chsh() { [[ "$3" != alice ]]; }
+  fisher_present_for() { return 0; }
   run install_shell
-
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Failed to change default shell for alice"* ]]
+  [[ "$output" == *"Failed to change shell for alice"* ]]
 }
 
 @test "install_python: fails early when pipx is missing" {

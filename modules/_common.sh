@@ -94,7 +94,9 @@ export NEEDRESTART_SUSPEND="${NEEDRESTART_SUSPEND:-1}"
 # first-boot apt-daily-upgrade.service can hold these for many minutes; without
 # this we'd either fail with "Could not get lock" or hang opaquely inside apt.
 # Returns 0 when free, 124 on timeout.
+# shellcheck disable=SC2120 # optional paths are used by POSIX-lock regression tests
 wait_apt_lock() {
+  require_commands python3 || return 1
   local timeout="${VM_INIT_APT_LOCK_TIMEOUT:-1800}"
   local interval=3 elapsed=0 announced=0 held=0
   local lock locks=(
@@ -103,11 +105,28 @@ wait_apt_lock() {
     /var/lib/apt/lists/lock
     /var/cache/apt/archives/lock
   )
+  if (( $# > 0 )); then locks=("$@"); fi
   while :; do
     held=0
     for lock in "${locks[@]}"; do
       [[ -e "$lock" ]] || continue
-      if ! flock -n "$lock" -c true 2>/dev/null; then
+      # dpkg uses POSIX record locks, not flock(2). Never create, truncate,
+      # remove, or retain a package-manager lock file.
+      if ! python3 - "$lock" <<'PY'
+import errno
+import fcntl
+import sys
+try:
+    with open(sys.argv[1], 'r+') as lock:
+        fcntl.lockf(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except FileNotFoundError:
+    pass
+except OSError as error:
+    if error.errno not in (errno.EACCES, errno.EAGAIN):
+        print(error, file=sys.stderr)
+    sys.exit(1)
+PY
+      then
         held=1
         break
       fi
@@ -144,8 +163,10 @@ wait_apt_lock() {
 # Also pins conffile prompts to "keep old" so a future config-modifying upgrade
 # doesn't surprise us with a debconf dialog.
 apt_get() {
+  # shellcheck disable=SC2119 # default system lock paths
   wait_apt_lock || return $?
-  apt-get \
+  run_maybe_timeout apt-get \
+    -o "DPkg::Lock::Timeout=${VM_INIT_APT_LOCK_TIMEOUT:-1800}" \
     -o Dpkg::Options::=--force-confdef \
     -o Dpkg::Options::=--force-confold \
     "$@"
@@ -334,19 +355,39 @@ run_maybe_timeout() {
   fi
 }
 
-run_quiet() {
-  if [[ "${VM_INIT_VERBOSE:-0}" == "1" ]]; then
-    run_maybe_timeout "$@"
-  else
-    local _out _rc=0
-    _out=$(run_maybe_timeout "$@" 2>&1) || _rc=$?
-    if [[ $_rc -ne 0 ]]; then
-      log_fail "Command failed (exit ${_rc}): $*"
-      echo "$_out" >&2
-      return "$_rc"
-    fi
+run_quiet() (
+  if [[ "${VM_INIT_VERBOSE:-0}" == 1 ]]; then run_maybe_timeout "$@"; return $?; fi
+  local capture child result_fd rc start_ts interval="${VM_INIT_PROGRESS_INTERVAL:-15}"
+  start_ts=$(date +%s)
+  capture=$(mktemp -d) || return 1
+  mkfifo "$capture/result" || return 1
+  exec {result_fd}<>"$capture/result"
+  trap 'if [[ -n "${child:-}" ]]; then kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; fi; rm -rf "$capture"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  (
+    rc=0
+    run_maybe_timeout "$@" > "$capture/output" 2>&1 || rc=$?
+    printf '.' >&"$result_fd"
+    exit "$rc"
+  ) &
+  child=$!
+  while ! read -r -N 1 -t "$interval" <&"$result_fd"; do
+    if ! kill -0 "$child" 2>/dev/null; then break; fi
+    log_info "Still working ($(format_duration "$(( $(date +%s) - start_ts ))"))"
+  done
+  # The pipe only wakes the progress loop. wait is the source of truth for
+  # status, so a timed-out/partial read cannot lose the child's exit code.
+  rc=0
+  wait "$child" || rc=$?
+  child=""
+  exec {result_fd}>&-
+  if [[ "$rc" != 0 ]]; then
+    log_fail "Command failed (exit ${rc}): $*"
+    cat "$capture/output" >&2
   fi
-}
+  return "$rc"
+)
 
 # Run a module entry point with errexit active inside the wrapped function while
 # still letting the orchestrator capture its exit code and print a summary.
@@ -439,15 +480,56 @@ should_upgrade() {
   [[ "${VM_INIT_NO_UPGRADE:-0}" != "1" ]]
 }
 
+# Used before any API lookup, including bespoke release installers.
+release_skip_installed() {
+  local binary="$1" version
+  if ! should_force && ! should_upgrade && is_installed "$binary"; then
+    version=$(state_get "github_release.${binary}" 2>/dev/null || true)
+    log_skip "${binary} installed${version:+ (${version})}; upgrade check disabled"
+    return 0
+  fi
+  return 1
+}
+
+# Account selection is resolved once by the orchestrator and shared by shell,
+# Docker, previews, verification, and saved retries.
+target_users() {
+  local user
+  for user in ${VM_INIT_TARGET_USERS:-}; do
+    getent passwd "$user" | awk -F: '{ print $1 ":" $6 }'
+  done
+}
+
+shell_command() {
+  local arg
+  for arg in "$@"; do printf '%q ' "$arg"; done
+}
+
+ensure_apt_packages() {
+  local package needed=()
+  for package in "$@"; do
+    if should_force || should_upgrade || ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'; then
+      needed+=("$package")
+    fi
+  done
+  if (( ${#needed[@]} == 0 )); then return 0; fi
+  if should_force; then run_quiet apt_get install -y -q --reinstall "${needed[@]}"
+  else run_quiet apt_get install -y -q "${needed[@]}"; fi
+}
+
+apt_installed_version() {
+  dpkg-query -W -f='${Status}\t${Version}\n' "$1" 2>/dev/null | awk -F '\t' '$1 == "install ok installed" { print $2 }' || true
+}
+
 # Read a YAML value, substituting a default only when the key is absent (null).
-# Unlike `yq '.x // default'` which also treats `false` as missing, this helper
+# Unlike `yq -r '.x // default'` which also treats `false` as missing, this helper
 # only falls back when yq returns the literal string "null".
 #
 # Usage: val=$(yq_get '.path.to.key' 'default' "$CONFIG")
 yq_get() {
   local path="$1" default="$2" config="$3"
   local val
-  val=$(yq -r "$path" "$config")
+  val=$(yq -r "$path" "$config") || return 1
   if [[ "$val" == "null" ]]; then
     echo "$default"
   else
@@ -574,12 +656,13 @@ verify_sha256() {
 # on success, warns and returns 0 if no sidecar exists (so callers don't abort
 # on projects that don't publish .sha256 files).
 try_verify_github_asset() {
-  local file="$1" sha_url="$2"
+  local file="$1" sha_url="$2" rc
   if verify_sha256 "$file" --from "$sha_url"; then
     log_info "sha256 verified ($(basename "$file"))"
     return 0
+  else
+    rc=$?
   fi
-  local rc=$?
   case "$rc" in
     2) log_warn "No .sha256 sidecar at ${sha_url} — checksum skipped" ;;
     3) log_warn "No sha256 tool available — checksum skipped" ;;
@@ -634,7 +717,7 @@ github_latest_version() {
 state_get() {
   local key="$1" value
   [[ -f "${VM_INIT_STATE_FILE}" ]] || return 1
-  value=$(grep "^${key}=" "${VM_INIT_STATE_FILE}" 2>/dev/null | tail -1 | cut -d= -f2-)
+  value=$(awk -v key="$key" 'index($0, key "=") == 1 { value=substr($0, length(key)+2) } END { print value }' "${VM_INIT_STATE_FILE}")
   [[ -n "$value" ]] || return 1
   echo "$value"
 }
@@ -642,12 +725,12 @@ state_get() {
 state_set() {
   local key="$1" value="$2" tmp
   mkdir -p "${VM_INIT_STATE_DIR}" 2>/dev/null || return 1
-  tmp=$(mktemp) || return 1
+  tmp=$(mktemp "${VM_INIT_STATE_DIR}/.state.XXXXXX") || return 1
   if [[ -f "${VM_INIT_STATE_FILE}" ]]; then
-    grep -v "^${key}=" "${VM_INIT_STATE_FILE}" > "$tmp" 2>/dev/null || true
+    awk -v key="$key" 'index($0, key "=") != 1' "${VM_INIT_STATE_FILE}" > "$tmp" || { rm -f "$tmp"; return 1; }
   fi
   printf '%s=%s\n' "$key" "$value" >> "$tmp"
-  mv "$tmp" "${VM_INIT_STATE_FILE}"
+  mv "$tmp" "${VM_INIT_STATE_FILE}" || return 1
   chmod 0644 "${VM_INIT_STATE_FILE}" 2>/dev/null || true
 }
 
@@ -662,8 +745,8 @@ version_lt() {
 # TUI binaries (systemd-manager-tui) ignore --version and launch the UI,
 # which can swallow SIGTERM, write to /dev/tty bypassing redirected pipes,
 # and leave the orchestrator hung. Rather than add per-binary heuristics,
-# github_release_decide treats "binary installed but no state" as a
-# migration case and adopts the latest tag into state without probing.
+# github_release_decide reinstalls an unmanaged binary at a known version
+# when upgrades are enabled; --no-upgrade preserves it without probing.
 
 # ---------- apt install/upgrade with reporting ----------
 #
@@ -678,7 +761,7 @@ apt_install_with_report() {
   local pkg="$1"
   local name="${2:-$pkg}"
   local pre post
-  pre=$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)
+  pre=$(apt_installed_version "$pkg")
 
   if [[ -z "$pre" ]]; then
     if ! run_quiet apt_get install -y -q "$pkg"; then
@@ -724,7 +807,7 @@ apt_install_group_with_report() {
   local name="$1" primary="$2"
   shift 2
   local pkgs=("$@") pre post
-  pre=$(dpkg-query -W -f='${Version}' "$primary" 2>/dev/null || true)
+  pre=$(apt_installed_version "$primary")
 
   if [[ -z "$pre" ]]; then
     if ! run_quiet apt_get install -y -q "${pkgs[@]}"; then
@@ -760,6 +843,7 @@ apt_install_group_with_report() {
     return 0
   fi
 
+  ensure_apt_packages "${pkgs[@]}" || return 1
   log_current "$name" "$pre"
 }
 
@@ -794,13 +878,10 @@ github_release_decide() {
 
   installed=$(state_get "github_release.${key}" 2>/dev/null || true)
 
-  # Binary is installed but state has no record (first run after upgrading
-  # to a vm-init that tracks tags, or state file was removed). Adopt the
-  # latest tag and treat as current — re-downloading every run is wasteful,
-  # and probing arbitrary binaries with --version is unsafe (TUI tools).
+  # Do not invent an installed version for an unmanaged binary. In normal
+  # upgrade mode install the requested release once to establish its origin.
   if [[ -z "$installed" ]]; then
-    state_set "github_release.${key}" "$latest"
-    echo "current ${latest}"
+    if should_upgrade; then echo install; else echo 'current unknown'; fi
     return 0
   fi
 
@@ -836,6 +917,8 @@ download_github_release() {
   local repo="$1" pattern="$2" binary="$3" arch_value="$4"
 
   log_step "${binary} from ${repo}"
+
+  if release_skip_installed "$binary"; then return 0; fi
 
   local tag
   if ! tag=$(github_latest_version "$repo"); then

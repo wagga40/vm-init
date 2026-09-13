@@ -10,12 +10,20 @@ export VM_INIT_REPO_ROOT
 export VM_INIT_SH="${VM_INIT_REPO_ROOT}/vm-init.sh"
 export VM_INIT_COMMON_SH="${VM_INIT_REPO_ROOT}/modules/_common.sh"
 export VM_INIT_DEFAULT_CONFIG="${VM_INIT_REPO_ROOT}/vm-init.yml"
+# Never consult live releases from the test suite.
+export VM_INIT_UPDATE_CHECK=1
+export VM_INIT_UPDATE_LATEST_OVERRIDE="$(cat "$VM_INIT_REPO_ROOT/VERSION")"
+# Root CI has multiple human accounts; make the test target explicit.
+export SUDO_USER="${SUDO_USER:-$(id -un)}"
 
 # Source _common.sh into the current shell for unit tests.
 # Suppress output during sourcing so it doesn't pollute test assertions.
 load_common() {
   # shellcheck disable=SC1090
   source "$VM_INIT_COMMON_SH"
+  source "$VM_INIT_REPO_ROOT/modules/_config.sh"
+  source "$VM_INIT_REPO_ROOT/modules/_safety.sh"
+  source "$VM_INIT_REPO_ROOT/modules/_recovery.sh"
 }
 
 # Create a temporary directory unique to the current test; cleaned up in teardown.
@@ -59,6 +67,7 @@ EOF
 make_minimal_config() {
   local dest="$1"
   cat > "$dest" <<'YAML'
+users: [root]
 apt:
   enabled: true
   packages: {}
@@ -111,6 +120,7 @@ YAML
 make_mixed_config() {
   local dest="$1"
   cat > "$dest" <<'YAML'
+users: [root]
 apt:
   enabled: true
   packages: {}

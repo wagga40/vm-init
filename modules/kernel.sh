@@ -100,7 +100,7 @@ _kernel_cmdline_remove() {
   current=$(_kernel_cmdline_value 2>/dev/null) || return 0
   new=$(printf '%s\n' "$current" \
     | tr ' ' '\n' \
-    | grep -vxF "$param" \
+    | awk -v param="$param" '$0 != param' \
     | tr '\n' ' ' \
     | sed -E 's/[[:space:]]+$//; s/^[[:space:]]+//')
   _kernel_cmdline_set "$new"

@@ -58,7 +58,7 @@ teardown() {
   for fn in install_apt install_ufw install_fail2ban install_kernel install_dns \
             install_docker install_python install_github_tools \
             install_github_releases install_yazi install_shell; do
-    grep -q "^${fn}() {" "$BUNDLE" \
+    grep -qE "^${fn}\(\) [({]" "$BUNDLE" \
       || { echo "missing entry: $fn"; return 1; }
   done
 }
@@ -69,7 +69,7 @@ teardown() {
   for fn in verify_apt verify_ufw verify_fail2ban verify_kernel verify_dns \
             verify_docker verify_python verify_github_tools \
             verify_github_releases verify_yazi verify_shell; do
-    grep -q "^${fn}() {" "$BUNDLE" \
+    grep -qE "^${fn}\(\) [({]" "$BUNDLE" \
       || { echo "missing verify function: $fn"; return 1; }
   done
 }

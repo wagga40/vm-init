@@ -2,10 +2,14 @@
 # Minimal defaults for a usable Ubuntu development shell.
 # Advanced networking, security, Docker, and GitHub tooling are opt-in below.
 
+# Configure the invoking sudo user by default. For unattended root runs,
+# set users: [alice] or pass --user alice. --all-users explicitly includes root.
+users: []
+
 apt:
   enabled: true
   packages:
-    shell: [fish, lsd]
+    shell: [fish, lsd, bat, zoxide]
     editor: [vim, neovim]
     build: [build-essential, git, curl, wget]
     system: [ca-certificates, gnupg, lsb-release]

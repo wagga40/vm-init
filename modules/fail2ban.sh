@@ -64,7 +64,7 @@ install_fail2ban() {
   backend=$(yq_get '.fail2ban.backend' "systemd" "$CONFIG")
   banaction_raw=$(yq_get '.fail2ban.banaction' "auto" "$CONFIG")
   banaction=$(fail2ban_resolve_banaction "$banaction_raw")
-  ignoreip=$(yq '.fail2ban.ignoreip // ["127.0.0.1/8", "::1"] | join(" ")' "$CONFIG")
+  ignoreip=$(yq -r '.fail2ban.ignoreip // ["127.0.0.1/8", "::1"] | join(" ")' "$CONFIG")
 
   log_step "Writing fail2ban jail overrides"
   mkdir -p /etc/fail2ban/jail.d
@@ -124,7 +124,7 @@ verify_fail2ban() {
   fi
 
   local jails jail rc=0
-  jails=$(yq '.fail2ban.jails // {} | to_entries | .[] | select(.value.enabled == true) | .key' \
+  jails=$(yq -r '.fail2ban.jails // {} | to_entries | .[] | select(.value.enabled == true) | .key' \
     "$CONFIG" 2>/dev/null)
 
   if [[ -z "$jails" ]]; then

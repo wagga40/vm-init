@@ -7,18 +7,18 @@
 
 install_github_releases_generic() {
   local count rc=0
-  count=$(yq '.github_releases.generic | length' "$CONFIG")
+  count=$(yq -r '.github_releases.generic | length' "$CONFIG")
 
   local i
   for ((i = 0; i < count; i++)); do
     local repo binary asset_pattern arch_value
-    repo=$(yq ".github_releases.generic[$i].repo" "$CONFIG")
-    binary=$(yq ".github_releases.generic[$i].binary" "$CONFIG")
-    asset_pattern=$(yq ".github_releases.generic[$i].asset_pattern" "$CONFIG")
+    repo=$(yq -r ".github_releases.generic[$i].repo" "$CONFIG")
+    binary=$(yq -r ".github_releases.generic[$i].binary" "$CONFIG")
+    asset_pattern=$(yq -r ".github_releases.generic[$i].asset_pattern" "$CONFIG")
 
     local sys_arch
     sys_arch=$(dpkg --print-architecture)
-    arch_value=$(yq ".github_releases.generic[$i].arch_map.${sys_arch} // \"${sys_arch}\"" "$CONFIG")
+    arch_value=$(yq -r ".github_releases.generic[$i].arch_map.${sys_arch} // \"${sys_arch}\"" "$CONFIG")
 
     # Keep going after a failure so one unreachable repo does not hide the rest,
     # but remember it: the module must not report success when a tool is missing.
@@ -37,6 +37,7 @@ install_github_releases_generic() {
 #   4. Otherwise: download/install, persist tag in state file, log accordingly.
 
 install_bandwhich() {
+  if release_skip_installed "bandwhich"; then return 0; fi
   log_step "bandwhich"
 
   local tag
@@ -82,6 +83,7 @@ install_bandwhich() {
 }
 
 install_vortix() {
+  if release_skip_installed "vortix"; then return 0; fi
   log_step "vortix"
 
   local tag
@@ -124,6 +126,7 @@ install_vortix() {
 }
 
 install_somo() {
+  if release_skip_installed "somo"; then return 0; fi
   local sys_arch
   sys_arch=$(dpkg --print-architecture)
   if [[ "$sys_arch" != "amd64" ]]; then
@@ -186,6 +189,7 @@ install_somo() {
 }
 
 install_systemd_manager_tui() {
+  if release_skip_installed "systemd-manager-tui"; then return 0; fi
   local sys_arch
   sys_arch=$(dpkg --print-architecture)
   case "$sys_arch" in
@@ -237,6 +241,7 @@ install_systemd_manager_tui() {
 }
 
 install_fresh() {
+  if release_skip_installed "fresh"; then return 0; fi
   local sys_arch
   sys_arch=$(dpkg --print-architecture)
   case "$sys_arch" in
@@ -288,6 +293,7 @@ install_fresh() {
 }
 
 install_bat() {
+  if release_skip_installed "bat"; then return 0; fi
   local sys_arch target
   sys_arch=$(dpkg --print-architecture)
   case "$sys_arch" in
@@ -363,7 +369,7 @@ install_github_releases() {
 
   local tool enabled
   for tool in "${!VM_INIT_CUSTOM_BINARIES[@]}"; do
-    enabled=$(yq ".github_releases.custom.${tool} // false" "$CONFIG")
+    enabled=$(yq -r ".github_releases.custom.${tool} // false" "$CONFIG")
     if [[ "$enabled" == "true" ]]; then
       "install_${tool}" || rc=1
     fi
@@ -379,9 +385,9 @@ verify_github_releases() {
   local missing=() present=0
   local count i binary tool enabled
 
-  count=$(yq '.github_releases.generic // [] | length' "$CONFIG")
+  count=$(yq -r '.github_releases.generic // [] | length' "$CONFIG")
   for ((i = 0; i < count; i++)); do
-    binary=$(yq ".github_releases.generic[$i].binary" "$CONFIG")
+    binary=$(yq -r ".github_releases.generic[$i].binary" "$CONFIG")
     [[ -z "$binary" || "$binary" == "null" ]] && continue
     if is_installed "$binary"; then
       present=$((present + 1))
@@ -391,7 +397,7 @@ verify_github_releases() {
   done
 
   for tool in "${!VM_INIT_CUSTOM_BINARIES[@]}"; do
-    enabled=$(yq ".github_releases.custom.${tool} // false" "$CONFIG")
+    enabled=$(yq -r ".github_releases.custom.${tool} // false" "$CONFIG")
     [[ "$enabled" == "true" ]] || continue
     binary="${VM_INIT_CUSTOM_BINARIES[$tool]}"
     if is_installed "$binary"; then

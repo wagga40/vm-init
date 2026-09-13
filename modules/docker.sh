@@ -2,9 +2,10 @@
 # Docker engine + compose installation module.
 
 install_docker() {
-  require_commands apt-get dpkg gpg lsb_release systemctl || return 1
+  require_commands apt-get dpkg systemctl || return 1
+  ensure_apt_packages ca-certificates curl gnupg lsb-release || return 1
 
-  if ! [[ -f /etc/apt/sources.list.d/docker.list ]]; then
+  if ! [[ -f /etc/apt/sources.list.d/docker.list && -s /etc/apt/keyrings/docker.gpg ]]; then
     log_step "Setting up Docker apt repository"
     mkdir -p /etc/apt/keyrings
 
@@ -17,6 +18,7 @@ install_docker() {
     fi
     run_quiet bash -c "gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg < '$gpg_tmp'"
     rm -f "$gpg_tmp"
+    chmod 644 /etc/apt/keyrings/docker.gpg
 
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
 https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
@@ -28,15 +30,14 @@ https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
   apt_install_group_with_report "docker" docker-ce \
     docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || return 1
 
-  local first_user
-  first_user=$(human_users | head -1 | cut -d: -f1)
-  if [[ -n "${first_user:-}" ]]; then
-    if ! id -nG "$first_user" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
-      usermod -aG docker "$first_user"
-      log_info "Added ${first_user} to docker group (log out/in for group to apply)"
-      vm_init_note "Log out and back in for ${first_user}'s docker group membership to apply."
+  local user
+  for user in ${VM_INIT_TARGET_USERS:-}; do
+    [[ "$user" != root ]] || continue
+    if ! id -nG "$user" | tr ' ' '\n' | grep -qx docker; then
+      usermod -aG docker "$user" || return 1
+      vm_init_note "Log out and back in for ${user}'s docker group membership to apply."
     fi
-  fi
+  done
 
   run_quiet systemctl enable docker
   run_quiet systemctl start docker
@@ -75,5 +76,12 @@ verify_docker() {
     rc=1
   fi
 
+  local user
+  for user in ${VM_INIT_TARGET_USERS:-}; do
+    [[ "$user" != root ]] || continue
+    if ! id -nG "$user" | tr ' ' '\n' | grep -qx docker; then
+      log_fail "${user} is not in the docker group"; rc=1
+    fi
+  done
   return "$rc"
 }

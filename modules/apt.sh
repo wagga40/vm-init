@@ -7,16 +7,18 @@ install_apt() {
 
   log_step "Collecting APT packages from config"
   local packages
-  packages=$(yq '.apt.packages | to_entries | .[].value | .[]' "$CONFIG" | sort -u)
+  packages=$(yq -r '.apt.packages // {} | to_entries | .[].value | .[]' "$CONFIG" | sort -u)
 
   if [[ -z "$packages" ]]; then
     log_skip "No APT packages configured"
     return 0
   fi
 
-  log_step "Updating apt index"
-  run_quiet apt_get update -q
-  log_ok "apt index updated"
+  if should_upgrade || should_force; then
+    log_step "Updating apt index"
+    run_quiet apt_get update -q
+    log_ok "apt index updated"
+  fi
 
   # Availability guard. Everything below installs in a single apt-get call, so
   # one name absent from this release would fail the whole batch and leave
@@ -45,7 +47,7 @@ install_apt() {
   declare -A pre_versions=()
   while IFS= read -r pkg; do
     [[ -z "$pkg" ]] && continue
-    pre_versions[$pkg]=$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)
+    pre_versions[$pkg]=$(apt_installed_version "$pkg")
   done <<< "$packages"
 
   if should_force; then
@@ -97,7 +99,7 @@ verify_apt() {
 
   local packages pkg present=0
   local missing=() unavailable=()
-  packages=$(yq '.apt.packages | to_entries | .[].value | .[]' "$CONFIG" | sort -u)
+  packages=$(yq -r '.apt.packages // {} | to_entries | .[].value | .[]' "$CONFIG" | sort -u)
 
   if [[ -z "$packages" ]]; then
     log_skip "No APT packages configured"

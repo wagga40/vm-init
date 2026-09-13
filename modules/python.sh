@@ -10,7 +10,7 @@ install_python() {
   export PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin
 
   local tools
-  tools=$(yq '.python.tools[]' "$CONFIG")
+  tools=$(yq -r '.python.tools[]' "$CONFIG")
 
   if [[ -z "$tools" ]]; then
     log_skip "No Python tools configured"
@@ -63,7 +63,7 @@ install_python() {
 # Post-install verification: every configured pipx tool resolves on PATH.
 verify_python() {
   local tools tool missing=() present=0
-  tools=$(yq '.python.tools[]?' "$CONFIG" 2>/dev/null)
+  tools=$(yq -r '.python.tools[]?' "$CONFIG" 2>/dev/null)
 
   if [[ -z "$tools" ]]; then
     log_skip "No Python tools configured"

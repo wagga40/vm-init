@@ -11,6 +11,7 @@ if command -v readlink >/dev/null 2>&1; then
   _self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 fi
 SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
+VM_INIT_RESOLVED_EXECUTABLE="${SCRIPT_DIR}/$(basename "$_self")"
 unset _self
 MODULES_DIR="${SCRIPT_DIR}/modules"
 SCRIPT_NAME="$(basename "$0")"
@@ -22,6 +23,25 @@ if ! declare -F log_step >/dev/null 2>&1; then
   # shellcheck source=modules/_common.sh
   source "${MODULES_DIR}/_common.sh"
 fi
+
+# Shared configuration and transaction helpers are also inlined in bundles.
+if ! declare -F check_config_tools >/dev/null; then
+  # shellcheck source=modules/_config.sh
+  source "${MODULES_DIR}/_config.sh"
+fi
+if ! declare -F snapshot_paths >/dev/null; then
+  # shellcheck source=modules/_safety.sh
+  source "${MODULES_DIR}/_safety.sh"
+fi
+if ! declare -F recover_dns_main >/dev/null; then
+  # shellcheck source=modules/_recovery.sh
+  source "${MODULES_DIR}/_recovery.sh"
+fi
+if ! declare -F setup_wizard >/dev/null; then
+  # shellcheck source=modules/_actions.sh
+  source "${MODULES_DIR}/_actions.sh"
+fi
+VM_INIT_EXECUTABLE="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 
 # Default-config emitter. In the repo layout this reads vm-init.yml from
 # alongside the orchestrator. Single-file bundles pre-define this function
@@ -43,10 +63,13 @@ fi
 #   4) embedded default (single-file bundle fallback)
 # Override everything explicitly with --config.
 CONFIG_EXPLICIT=0
+VM_INIT_CONFIG_ORIGIN="shipped default"
 if [[ -f "/etc/vm-init/vm-init.yml" ]]; then
   CONFIG="/etc/vm-init/vm-init.yml"
+  VM_INIT_CONFIG_ORIGIN="system configuration"
 elif [[ -f "$(pwd)/vm-init.yml" ]]; then
   CONFIG="$(pwd)/vm-init.yml"
+  VM_INIT_CONFIG_ORIGIN="current directory"
 else
   CONFIG="${SCRIPT_DIR}/vm-init.yml"
 fi
@@ -71,7 +94,7 @@ detect_run_mode() {
     echo "bundled_single_file"
     return 0
   fi
-  if [[ "$SCRIPT_DIR" == "/opt/vm-init" || "$SCRIPT_DIR" == "/opt/vm-init/"* ]]; then
+  if [[ -f "$SCRIPT_DIR/.vm-init-managed" || "$SCRIPT_DIR" == /opt/vm-init ]]; then
     echo "installed_tarball"
     return 0
   fi
@@ -153,7 +176,7 @@ update_bundled_single_file() {
   local latest="${1:-}"
   local target target_dir tmpdir tmpbin bin_url sha_url rc=0
 
-  target="${SCRIPT_DIR}/${SCRIPT_NAME}"
+  target="$VM_INIT_RESOLVED_EXECUTABLE"
   if [[ ! -f "$target" ]]; then
     log_fail "Cannot locate current bundle at ${target}"
     return 1
@@ -293,7 +316,7 @@ update_local_checkout() {
 }
 
 run_update_cmd() {
-  local latest installer
+  local latest installer managed_bin=/usr/local/sbin managed_no_symlink=0
   latest="$(latest_release_version || true)"
 
   case "${VM_INIT_RUN_MODE}" in
@@ -307,16 +330,21 @@ run_update_cmd() {
         log_fail "Update in install mode requires root. Re-run with: sudo ${SCRIPT_NAME} --update"
         return 1
       fi
-      log_step "Updating vm-init installation under /opt/vm-init"
+      if [[ -f "$SCRIPT_DIR/.vm-init-managed" ]]; then
+        { read -r managed_bin; read -r managed_no_symlink; } < "$SCRIPT_DIR/.vm-init-managed" || return 1
+      fi
+      log_step "Updating vm-init installation under ${SCRIPT_DIR}"
       if [[ -n "$latest" ]]; then
         log_info "Latest available release: ${latest#v}"
         # Avoid leaking vm-init's own VM_INIT_VERSION (e.g., "1.1.0") into
         # install.sh, and pin the exact release tag (e.g., "v1.1.0").
-        env -u VM_INIT_VERSION bash "$installer" --prefix /opt/vm-init --version "$latest"
+        env -u VM_INIT_VERSION VM_INIT_BIN_DIR="$managed_bin" VM_INIT_NO_SYMLINK="$managed_no_symlink" \
+          bash "$installer" --prefix "$SCRIPT_DIR" --version "$latest"
       else
         # Fallback to installer default ("latest"), without inheriting local
         # VM_INIT_VERSION that is not a release tag.
-        env -u VM_INIT_VERSION bash "$installer" --prefix /opt/vm-init
+        env -u VM_INIT_VERSION VM_INIT_BIN_DIR="$managed_bin" VM_INIT_NO_SYMLINK="$managed_no_symlink" \
+          bash "$installer" --prefix "$SCRIPT_DIR"
       fi
       return $?
       ;;
@@ -345,6 +373,19 @@ VM_INIT_VERIFY=0
 VM_INIT_FAIL_FAST=0
 VM_INIT_ONLY=""
 VM_INIT_SKIP=""
+VM_INIT_SETUP=0
+VM_INIT_YES=0
+VM_INIT_FEATURES=""
+VM_INIT_JSON=0
+VM_INIT_USER_OPTION=""
+VM_INIT_ALL_USERS=0
+VM_INIT_PREPARE=0
+VM_INIT_REPAIR=""
+VM_INIT_COMMAND=""
+VM_INIT_RECOVERY_ARGS=()
+VM_INIT_SETUP_TMP=""
+VM_INIT_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+VM_INIT_CONFIG_FINGERPRINT=""
 LOG_FILE=""
 LOG_FILE_EXPLICIT=0
 
@@ -392,11 +433,24 @@ usage() {
   echo -e "${_C_BOLD}vm-init${_C_RESET} ${_C_CYAN}${VM_INIT_VERSION}${_C_RESET} ${_C_DIM}—${_C_RESET} Config-driven Ubuntu machine setup"
 
   print_help_section "Usage:"
-  echo -e "  sudo ${SCRIPT_NAME} [options]"
+  echo -e "  sudo ${SCRIPT_NAME} [command] [options]"
+  echo '  setup              Choose an account and features, preview, then apply'
+  echo '  plan               Preview the selected configuration'
+  echo '  apply              Apply configuration (also the default command)'
+  echo '  status [--json]    Verify selected features and show their state'
+  echo '  repair dns|failed  Restore DNS offline, or retry the last failed modules'
+  echo '  confirm-firewall   Keep firewall changes from a new SSH session'
+  echo '  prepare            Install configuration tools before the first preview'
+  echo '  update             Update this vm-init installation'
 
   print_help_section "Options:"
   echo -e "  ${_C_DIM}Selection${_C_RESET}"
   _usage_opt "--config, -c <path>"    "Config file (default: /etc/vm-init/vm-init.yml, then ./vm-init.yml, then sibling vm-init.yml)"
+  _usage_opt "--user <list>" "Accounts to configure (comma-separated; default: invoking sudo user)"
+  _usage_opt "--all-users" "Explicitly configure root and every human account"
+  _usage_opt "--features <list>" "setup features: shell,docker,python,tools"
+  _usage_opt "--yes, -y" "Accept the setup plan for unattended setup"
+  _usage_opt "--json" "Machine-readable status; diagnostics go to stderr"
   _usage_opt "--only <list>"      "Comma-separated module names to run (others skipped)"
   _usage_opt "--skip <list>"      "Comma-separated module names to exclude"
   _usage_opt "--list-modules, -l"     "Print modules with enabled/disabled state and exit"
@@ -432,11 +486,11 @@ usage() {
   _usage_example "Rerun only DNS after a failure"                    "sudo ${SCRIPT_NAME} --only dns"
   _usage_example "Skip slow modules for quick first-boot provisioning" "sudo ${SCRIPT_NAME} --skip docker,github_releases"
   _usage_example "Reinstall everything, verbose"                     "sudo ${SCRIPT_NAME} --force --verbose"
-  _usage_example "Check an already-provisioned machine is still healthy" "sudo ${SCRIPT_NAME} --verify"
+  _usage_example "Check an already-provisioned machine is still healthy" "$(retry_command status)"
 
   print_help_section "Recovery:"
   echo -e "  If DNS is broken after provisioning, run:"
-  echo -e "    ${_C_CYAN}sudo vm-init-recover-dns --with-fallback${_C_RESET}"
+  echo -e "    ${_C_CYAN}sudo vm-init repair dns --with-fallback${_C_RESET}"
   echo -e "  From a source checkout, run: ${_C_CYAN}sudo modules/recover-dns.sh --with-fallback${_C_RESET}"
 
   echo ""
@@ -455,9 +509,26 @@ require_option_value() {
   fi
 }
 
+if [[ $# -gt 0 && "$1" != -* ]]; then
+  VM_INIT_COMMAND="$1"; shift
+  case "$VM_INIT_COMMAND" in
+    setup) VM_INIT_SETUP=1 ;;
+    plan) VM_INIT_DRY_RUN=1 ;;
+    apply) ;;
+    status) VM_INIT_VERIFY=1 ;;
+    update) VM_INIT_DO_UPDATE=1 ;;
+    prepare) VM_INIT_PREPARE=1 ;;
+    confirm-firewall) VM_INIT_REPAIR=firewall ;;
+    repair)
+      VM_INIT_REPAIR="${1:-}"; [[ $# -eq 0 ]] || shift
+      case "$VM_INIT_REPAIR" in dns|failed) ;; *) log_fail 'Usage: vm-init repair dns|failed'; exit 1 ;; esac ;;
+    *) log_fail "Unknown command: $VM_INIT_COMMAND"; usage >&2; exit 1 ;;
+  esac
+fi
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --config|-c)             require_option_value "$1" "${2-}"; CONFIG="$2"; CONFIG_EXPLICIT=1; shift 2 ;;
+    --config|-c)             require_option_value "$1" "${2-}"; CONFIG="$2"; CONFIG_EXPLICIT=1; VM_INIT_CONFIG_ORIGIN="explicit --config"; shift 2 ;;
     --only)                   require_option_value "$1" "${2-}"; VM_INIT_ONLY="$2"; shift 2 ;;
     --skip)                   require_option_value "$1" "${2-}"; VM_INIT_SKIP="$2"; shift 2 ;;
     --dry-run)                export VM_INIT_DRY_RUN=1; shift ;;
@@ -471,8 +542,16 @@ while [[ $# -gt 0 ]]; do
     --verbose)                export VM_INIT_VERBOSE=1; shift ;;
     --no-log)                 export VM_INIT_NO_LOG=1; shift ;;
     --log-file)               require_option_value "$1" "${2-}"; LOG_FILE="$2"; LOG_FILE_EXPLICIT=1; shift 2 ;;
+    --user) require_option_value "$1" "${2-}"; VM_INIT_USER_OPTION="$2"; shift 2 ;;
+    --all-users) VM_INIT_ALL_USERS=1; shift ;;
+    --yes|-y) VM_INIT_YES=1; shift ;;
+    --features) require_option_value "$1" "${2-}"; VM_INIT_FEATURES="$2"; shift 2 ;;
+    --json) VM_INIT_JSON=1; shift ;;
+    --prepare) VM_INIT_PREPARE=1; shift ;;
+    --with-fallback) VM_INIT_RECOVERY_ARGS+=("$1"); shift ;;
+    --iface|--fallback) require_option_value "$1" "${2-}"; VM_INIT_RECOVERY_ARGS+=("$1" "$2"); shift 2 ;;
     --version)                echo "vm-init ${VM_INIT_VERSION}"; exit 0 ;;
-    --help|-h)                usage; exit 0 ;;
+    --help|-h)                if [[ "$VM_INIT_REPAIR" == dns ]]; then recover_dns_usage; else usage; fi; exit 0 ;;
     *)                        echo -e "${_C_RED}${_SYM_FAIL}${_C_RESET} Unknown option: ${_C_BOLD}$1${_C_RESET}" >&2; echo "" >&2; usage >&2; exit 1 ;;
   esac
 done
@@ -508,7 +587,41 @@ if [[ "$VM_INIT_VERIFY" == "1" && "$VM_INIT_DRY_RUN" == "1" ]]; then
   exit 1
 fi
 
+# Every mode conflict is rejected before writes, installs, update checks, or repair.
+if (( VM_INIT_DO_UPDATE + VM_INIT_WRITE_DEFAULT_CONFIG + VM_INIT_LIST_MODULES + VM_INIT_PREPARE + VM_INIT_VERIFY + VM_INIT_DRY_RUN > 1 )) \
+   || { [[ -n "$VM_INIT_REPAIR" ]] && (( VM_INIT_DO_UPDATE + VM_INIT_WRITE_DEFAULT_CONFIG + VM_INIT_LIST_MODULES + VM_INIT_PREPARE + VM_INIT_VERIFY + VM_INIT_DRY_RUN + VM_INIT_SETUP > 0 )); } \
+   || { [[ "$VM_INIT_SETUP" == 1 ]] && (( VM_INIT_DO_UPDATE + VM_INIT_WRITE_DEFAULT_CONFIG + VM_INIT_LIST_MODULES + VM_INIT_PREPARE + VM_INIT_VERIFY > 0 )); }; then
+  log_fail 'Execution modes are mutually exclusive; choose one command.'
+  exit 1
+fi
+if [[ "$VM_INIT_ALL_USERS" == 1 && -n "$VM_INIT_USER_OPTION" ]]; then
+  log_fail '--user and --all-users are mutually exclusive'; exit 1
+fi
+if [[ "$VM_INIT_JSON" == 1 && "$VM_INIT_VERIFY" != 1 ]]; then
+  log_fail '--json is available with status or --verify'; exit 1
+fi
+if (( ${#VM_INIT_RECOVERY_ARGS[@]} > 0 )) && [[ "$VM_INIT_REPAIR" != dns ]]; then
+  log_fail 'Recovery options require repair dns'; exit 1
+fi
+if [[ -n "$VM_INIT_FEATURES" && "$VM_INIT_SETUP" != 1 ]]; then log_fail '--features requires setup'; exit 1; fi
+if [[ "$VM_INIT_JSON" == 1 ]]; then exec 3>&1; exec 1>&2; fi
+if [[ "$VM_INIT_REPAIR" == dns ]]; then recover_dns_main "${VM_INIT_RECOVERY_ARGS[@]}"; exit $?; fi
+if [[ "$VM_INIT_REPAIR" == firewall ]]; then
+  [[ $EUID -eq 0 ]] || { log_fail 'Run as root: sudo vm-init confirm-firewall'; exit 1; }
+  if ! declare -F confirm_firewall >/dev/null; then source "${MODULES_DIR}/ufw.sh"; fi
+  confirm_firewall; exit $?
+fi
+if [[ "$VM_INIT_REPAIR" == failed ]]; then load_failed_run || exit 1; fi
+if [[ "$VM_INIT_PREPARE" == 1 ]]; then
+  [[ $EUID -eq 0 ]] || { log_fail 'Run as root: sudo vm-init prepare'; exit 1; }
+  if [[ ! -f /etc/os-release ]] || ! grep -qi ubuntu /etc/os-release; then log_fail 'This script only supports Ubuntu'; exit 1; fi
+  acquire_run_lock
+  bootstrap_config_tools
+  exit $?
+fi
+
 if [[ "$VM_INIT_DO_UPDATE" == "1" ]]; then
+  if [[ $EUID -eq 0 ]]; then acquire_run_lock || exit 1; fi
   if ! run_update_cmd; then
     exit 1
   fi
@@ -540,7 +653,7 @@ write_default_config_cmd() {
   log_ok "Wrote default config to ${_C_CYAN}${target}${_C_RESET}"
   echo ""
   echo -e "  ${_C_BOLD}Next:${_C_RESET} edit ${_C_CYAN}${target}${_C_RESET}, then run:"
-  echo -e "    ${_C_CYAN}sudo ${SCRIPT_NAME} --config ${target}${_C_RESET}"
+  echo -e "    ${_C_CYAN}$(shell_command sudo "$VM_INIT_EXECUTABLE" apply --config "$target")${_C_RESET}"
   echo -e "  Or move it to a standard location that ${SCRIPT_NAME} auto-picks-up:"
   echo -e "    ${_C_CYAN}sudo install -Dm 0644 ${target} /etc/vm-init/vm-init.yml${_C_RESET}"
   return 0
@@ -561,6 +674,7 @@ VM_INIT_EMBEDDED_CONFIG_TMP=""
 VM_INIT_TALLY_FILE=""
 VM_INIT_NOTES_FILE=""
 _vm_init_cleanup() {
+  [[ -z "${VM_INIT_SETUP_TMP:-}" ]] || rm -f "$VM_INIT_SETUP_TMP"
   if [[ -n "${VM_INIT_EMBEDDED_CONFIG_TMP:-}" && -f "${VM_INIT_EMBEDDED_CONFIG_TMP}" ]]; then
     rm -f "$VM_INIT_EMBEDDED_CONFIG_TMP"
   fi
@@ -580,10 +694,19 @@ if [[ "$CONFIG_EXPLICIT" != "1" && ! -f "$CONFIG" ]] \
      && _emit_default_config > "$VM_INIT_EMBEDDED_CONFIG_TMP" 2>/dev/null \
      && [[ -s "$VM_INIT_EMBEDDED_CONFIG_TMP" ]]; then
     CONFIG="$VM_INIT_EMBEDDED_CONFIG_TMP"
+    VM_INIT_CONFIG_ORIGIN="embedded default"
   else
     rm -f "${VM_INIT_EMBEDDED_CONFIG_TMP:-}" 2>/dev/null || true
     VM_INIT_EMBEDDED_CONFIG_TMP=""
   fi
+fi
+
+if [[ "$VM_INIT_SETUP" == 1 ]]; then setup_wizard || exit 1; fi
+VM_INIT_SOURCE_CONFIG="$CONFIG"
+if [[ "$CONFIG" == "$VM_INIT_EMBEDDED_CONFIG_TMP" ]]; then VM_INIT_SOURCE_CONFIG=""; fi
+if [[ "$VM_INIT_SETUP" == 1 ]]; then VM_INIT_SOURCE_CONFIG=""; fi
+if [[ "$VM_INIT_SOURCE_CONFIG" != "" && -f "$VM_INIT_SOURCE_CONFIG" ]]; then
+  VM_INIT_SOURCE_CONFIG="$(cd "$(dirname "$VM_INIT_SOURCE_CONFIG")" && pwd)/$(basename "$VM_INIT_SOURCE_CONFIG")"
 fi
 
 # Tally file: per-tool outcomes (one of "installed", "upgraded", "current"
@@ -625,6 +748,149 @@ module_excluded() {
 # ---------------------------------------------------------------------------
 # --list-modules: early exit path
 # ---------------------------------------------------------------------------
+
+validate_config() {
+  local errors=0
+  local val i count
+
+  log_step "Validating config"
+  validate_config_schema || return 1
+
+  # Parse the file once up front. Without this, malformed YAML surfaces as a raw
+  # yq trace from whichever lookup happens to run first.
+  if ! yq -r '.' "$CONFIG" >/dev/null 2>&1; then
+    log_fail "Config is not valid YAML: ${CONFIG}"
+    yq -r '.' "$CONFIG" 2>&1 | head -5 >&2
+    return 1
+  fi
+
+  # Unknown top-level keys are the silent failure mode of an opt-in config:
+  # blocks default to enabled:false, so `github_release:` typed for
+  # `github_releases:` disables the module with no diagnostic at all. Warn
+  # rather than fail -- hand-edited configs may legitimately carry extra keys.
+  local known="users," key spec
+  for spec in "${VM_INIT_MODULES[@]}"; do
+    known+="${spec%%:*},"
+  done
+  while IFS= read -r key; do
+    [[ -z "$key" ]] && continue
+    if ! [[ ",$known" == *",$key,"* ]]; then
+      log_warn "Unknown top-level config key '${key}' — ignored (typo? valid: ${known%,})"
+    fi
+  done < <(yq -r 'keys | .[]' "$CONFIG" 2>/dev/null)
+
+  # APT package names end up in an unquoted expansion in apt.sh, and a name with
+  # whitespace would silently split into two package requests.
+  while IFS= read -r val; do
+    [[ -z "$val" ]] && continue
+    if ! [[ "$val" =~ ^[a-zA-Z0-9][a-zA-Z0-9+._-]*$ ]]; then
+      log_fail "apt.packages contains an invalid package name: '$val'"
+      errors=$((errors + 1))
+    fi
+  done < <(yq -r '.apt.packages // {} | to_entries | .[].value | .[]' "$CONFIG" 2>/dev/null)
+
+  if [[ "$(yq_get '.python.enabled' false "$CONFIG")" == "true" ]]; then
+    while IFS= read -r val; do
+      [[ -z "$val" ]] && continue
+      if ! [[ "$val" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
+        log_fail "python.tools contains an invalid tool name: '$val'"
+        errors=$((errors + 1))
+      fi
+    done < <(yq -r '.python.tools // [] | .[]' "$CONFIG" 2>/dev/null)
+  fi
+
+  if [[ "$(yq_get '.dns.enabled' false "$CONFIG")" == "true" ]]; then
+    val=$(yq_get '.dns.server' "" "$CONFIG")
+    if [[ -n "$val" ]]; then
+      if [[ "$val" != https://* && "$val" != tls://* ]]; then
+        log_fail "dns.server must start with https:// (DoH) or tls:// (DoT): got '$val'"
+        errors=$((errors + 1))
+      fi
+    fi
+    if [[ "$val" == *[[:space:]]* ]]; then
+      log_fail 'dns.server must not contain whitespace'; errors=$((errors + 1))
+    fi
+    val=$(yq_get '.dns.listen_address' 127.0.0.1 "$CONFIG")
+    if ! python3 -c 'import ipaddress, sys; ipaddress.ip_address(sys.argv[1])' "$val" 2>/dev/null; then
+      log_fail "dns.listen_address must be an IP address: $val"; errors=$((errors + 1))
+    fi
+    val=$(yq_get '.dns.listen_port' 5353 "$CONFIG")
+    if ! [[ "$val" =~ ^[0-9]+$ ]] || (( 10#$val < 1 || 10#$val > 65535 )); then
+      log_fail "dns.listen_port must be an integer in 1-65535: got '$val'"
+      errors=$((errors + 1))
+    fi
+  fi
+
+  if [[ "$(yq_get '.ufw.enabled' false "$CONFIG")" == "true" ]]; then
+    for dir in incoming outgoing; do
+      val=$(yq_get ".ufw.defaults.${dir}" "" "$CONFIG")
+      if [[ -n "$val" ]]; then
+        case "$val" in
+          allow|deny|reject) ;;
+          *)
+            log_fail "ufw.defaults.${dir} must be allow|deny|reject: got '$val'"
+            errors=$((errors + 1))
+            ;;
+        esac
+      fi
+    done
+  fi
+
+  if [[ "$(yq_get '.fail2ban.enabled' false "$CONFIG")" == "true" ]]; then
+    val=$(yq_get '.fail2ban.maxretry' 5 "$CONFIG")
+    if ! [[ "$val" =~ ^[0-9]+$ ]] || (( 10#$val < 1 )); then
+      log_fail "fail2ban.maxretry must be a positive integer: got '$val'"
+      errors=$((errors + 1))
+    fi
+    val=$(yq_get '.fail2ban.banaction' "auto" "$CONFIG")
+    case "$val" in
+      ""|*" "*)
+        log_fail "fail2ban.banaction must be a simple action name (no spaces): got '$val'"
+        errors=$((errors + 1))
+        ;;
+    esac
+  fi
+
+  if [[ "$(yq_get '.github_releases.enabled' false "$CONFIG")" == "true" ]]; then
+    count=$(yq -r '.github_releases.generic // [] | length' "$CONFIG")
+    for ((i = 0; i < count; i++)); do
+      for field in repo binary asset_pattern; do
+        val=$(yq_get ".github_releases.generic[$i].${field}" "" "$CONFIG")
+        if [[ -z "$val" ]]; then
+          log_fail "github_releases.generic[$i].${field} is required"
+          errors=$((errors + 1))
+        fi
+      done
+      # The binary name is used as a path under /usr/local/bin and as a state
+      # key, so it has to be a bare name.
+      val=$(yq_get ".github_releases.generic[$i].binary" "" "$CONFIG")
+      if [[ -n "$val" && ! "$val" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
+        log_fail "github_releases.generic[$i].binary must be a plain binary name: got '$val'"
+        errors=$((errors + 1))
+      fi
+    done
+  fi
+
+  if [[ "$(yq_get '.shell.enabled' false "$CONFIG")" == "true" ]]; then
+    val=$(yq_get '.shell.default_shell' "" "$CONFIG")
+    if [[ -n "$val" ]]; then
+      case "$val" in
+        */*|*' '*)
+          log_fail "shell.default_shell must be a plain binary name: got '$val'"
+          errors=$((errors + 1))
+          ;;
+      esac
+    fi
+  fi
+
+  if (( errors > 0 )); then
+    log_fail "Config validation failed with ${errors} error(s)"
+    return 1
+  fi
+
+  log_ok "Config valid"
+  return 0
+}
 
 list_modules_cmd() {
   if [[ ! -f "$CONFIG" ]]; then
@@ -675,6 +941,7 @@ list_modules_cmd() {
 }
 
 if [[ "$VM_INIT_LIST_MODULES" == "1" ]]; then
+  validate_config || exit 1
   list_modules_cmd
   exit $?
 fi
@@ -761,7 +1028,13 @@ fi
 
 echo -e "${_C_BOLD}Run configuration${_C_RESET}"
 print_rule 44
-print_kv "Config"   "${_C_CYAN}${CONFIG}${_C_RESET}"
+if [[ "$VM_INIT_SETUP" == 1 ]]; then
+  print_kv 'Config' "Setup choices (save to ${VM_INIT_SETUP_DEST})"
+elif [[ "$CONFIG" == "$VM_INIT_EMBEDDED_CONFIG_TMP" ]]; then
+  print_kv 'Config' 'Embedded default'
+else
+  print_kv "Config" "${_C_CYAN}${CONFIG}${_C_RESET}"
+fi
 [[ -n "${LOG_FILE:-}"     ]] && print_kv "Log"     "${_C_CYAN}${LOG_FILE}${_C_RESET}"
 [[ -n "$VM_INIT_ONLY"     ]] && print_kv "Only"    "${_C_BOLD}${VM_INIT_ONLY}${_C_RESET}"
 [[ -n "$VM_INIT_SKIP"     ]] && print_kv "Skip"    "${_C_BOLD}${VM_INIT_SKIP}${_C_RESET}"
@@ -773,189 +1046,33 @@ print_kv "Config"   "${_C_CYAN}${CONFIG}${_C_RESET}"
 [[ "$VM_INIT_FAIL_FAST"  == "1" ]] && print_kv "Fail-fast"  "${_C_YELLOW}${_C_BOLD}ON${_C_RESET}"
 
 # ---------------------------------------------------------------------------
-# Pre-flight: wait for any background apt/dpkg holder before touching the
-# system. On fresh cloud images apt-daily-upgrade.service / unattended-upgrades
-# routinely run on first boot; without an explicit early check the user sees
-# silence until the first module reaches its apt step.
-# ---------------------------------------------------------------------------
-
-if [[ "$VM_INIT_DRY_RUN" != "1" && "$VM_INIT_VERIFY" != "1" ]]; then
-  echo ""
-  log_step "Checking for background apt/dpkg activity"
-  if ! wait_apt_lock; then
-    log_fail "Aborting — another apt/dpkg process is still active."
-    exit 1
-  fi
-  log_ok "No background apt/dpkg activity"
-fi
-
-# ---------------------------------------------------------------------------
-# yq bootstrap (skipped in dry-run)
-# ---------------------------------------------------------------------------
-
-if [[ "$VM_INIT_DRY_RUN" != "1" && "$VM_INIT_VERIFY" != "1" ]]; then
-  if ! command -v yq >/dev/null 2>&1; then
-    log_step "Installing yq"
-    sys_arch=$(dpkg --print-architecture)
-    yq_url="https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${sys_arch}"
-    if ! run_quiet download_file "$yq_url" /usr/local/bin/yq; then
-      log_fail "Failed to download yq from ${yq_url}"
-      exit 1
-    fi
-    chmod +x /usr/local/bin/yq
-    log_ok "yq installed"
-  fi
+# Prepare dependencies only for an actual apply; all read-only commands refuse
+# installation and explain the single preparation command.
+if [[ "$VM_INIT_DRY_RUN" != 1 && "$VM_INIT_VERIFY" != 1 ]]; then
+  acquire_run_lock || exit 1
+  bootstrap_config_tools || exit 1
+  log_step 'Checking for background apt/dpkg activity'
+  # shellcheck disable=SC2119 # default system lock paths
+  wait_apt_lock || exit 1
 else
-  if ! command -v yq >/dev/null 2>&1; then
-    log_fail "yq not found (--dry-run and --verify never install anything). Install yq and retry."
-    exit 1
-  fi
+  check_config_tools || exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# Config validation
-# ---------------------------------------------------------------------------
-
-validate_config() {
-  local errors=0
-  local val i count
-
-  log_step "Validating config"
-
-  # Parse the file once up front. Without this, malformed YAML surfaces as a raw
-  # yq trace from whichever lookup happens to run first.
-  if ! yq '.' "$CONFIG" >/dev/null 2>&1; then
-    log_fail "Config is not valid YAML: ${CONFIG}"
-    yq '.' "$CONFIG" 2>&1 | head -5 >&2
-    return 1
-  fi
-
-  # Unknown top-level keys are the silent failure mode of an opt-in config:
-  # blocks default to enabled:false, so `github_release:` typed for
-  # `github_releases:` disables the module with no diagnostic at all. Warn
-  # rather than fail -- hand-edited configs may legitimately carry extra keys.
-  local known="" key spec
-  for spec in "${VM_INIT_MODULES[@]}"; do
-    known+="${spec%%:*},"
-  done
-  while IFS= read -r key; do
-    [[ -z "$key" ]] && continue
-    if ! [[ ",$known" == *",$key,"* ]]; then
-      log_warn "Unknown top-level config key '${key}' — ignored (typo? valid: ${known%,})"
-    fi
-  done < <(yq -r 'keys | .[]' "$CONFIG" 2>/dev/null)
-
-  # APT package names end up in an unquoted expansion in apt.sh, and a name with
-  # whitespace would silently split into two package requests.
-  while IFS= read -r val; do
-    [[ -z "$val" ]] && continue
-    if ! [[ "$val" =~ ^[a-zA-Z0-9][a-zA-Z0-9+._-]*$ ]]; then
-      log_fail "apt.packages contains an invalid package name: '$val'"
-      errors=$((errors + 1))
-    fi
-  done < <(yq -r '.apt.packages // {} | to_entries | .[].value | .[]' "$CONFIG" 2>/dev/null)
-
-  if [[ "$(yq_get '.python.enabled' false "$CONFIG")" == "true" ]]; then
-    while IFS= read -r val; do
-      [[ -z "$val" ]] && continue
-      if ! [[ "$val" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
-        log_fail "python.tools contains an invalid tool name: '$val'"
-        errors=$((errors + 1))
-      fi
-    done < <(yq -r '.python.tools // [] | .[]' "$CONFIG" 2>/dev/null)
-  fi
-
-  if [[ "$(yq_get '.dns.enabled' false "$CONFIG")" == "true" ]]; then
-    val=$(yq_get '.dns.server' "" "$CONFIG")
-    if [[ -n "$val" ]]; then
-      if [[ "$val" != https://* && "$val" != tls://* ]]; then
-        log_fail "dns.server must start with https:// (DoH) or tls:// (DoT): got '$val'"
-        errors=$((errors + 1))
-      fi
-    fi
-    val=$(yq_get '.dns.listen_port' 5353 "$CONFIG")
-    if ! [[ "$val" =~ ^[0-9]+$ ]] || (( val < 1 || val > 65535 )); then
-      log_fail "dns.listen_port must be an integer in 1-65535: got '$val'"
-      errors=$((errors + 1))
-    fi
-  fi
-
-  if [[ "$(yq_get '.ufw.enabled' false "$CONFIG")" == "true" ]]; then
-    for dir in incoming outgoing; do
-      val=$(yq_get ".ufw.defaults.${dir}" "" "$CONFIG")
-      if [[ -n "$val" ]]; then
-        case "$val" in
-          allow|deny|reject) ;;
-          *)
-            log_fail "ufw.defaults.${dir} must be allow|deny|reject: got '$val'"
-            errors=$((errors + 1))
-            ;;
-        esac
-      fi
-    done
-  fi
-
-  if [[ "$(yq_get '.fail2ban.enabled' false "$CONFIG")" == "true" ]]; then
-    val=$(yq_get '.fail2ban.maxretry' 5 "$CONFIG")
-    if ! [[ "$val" =~ ^[0-9]+$ ]] || (( val < 1 )); then
-      log_fail "fail2ban.maxretry must be a positive integer: got '$val'"
-      errors=$((errors + 1))
-    fi
-    val=$(yq_get '.fail2ban.banaction' "auto" "$CONFIG")
-    case "$val" in
-      ""|*" "*)
-        log_fail "fail2ban.banaction must be a simple action name (no spaces): got '$val'"
-        errors=$((errors + 1))
-        ;;
-    esac
-  fi
-
-  if [[ "$(yq_get '.github_releases.enabled' false "$CONFIG")" == "true" ]]; then
-    count=$(yq '.github_releases.generic // [] | length' "$CONFIG")
-    for ((i = 0; i < count; i++)); do
-      for field in repo binary asset_pattern; do
-        val=$(yq_get ".github_releases.generic[$i].${field}" "" "$CONFIG")
-        if [[ -z "$val" ]]; then
-          log_fail "github_releases.generic[$i].${field} is required"
-          errors=$((errors + 1))
-        fi
-      done
-      # The binary name is used as a path under /usr/local/bin and as a state
-      # key, so it has to be a bare name.
-      val=$(yq_get ".github_releases.generic[$i].binary" "" "$CONFIG")
-      if [[ -n "$val" && ! "$val" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
-        log_fail "github_releases.generic[$i].binary must be a plain binary name: got '$val'"
-        errors=$((errors + 1))
-      fi
-    done
-  fi
-
-  if [[ "$(yq_get '.shell.enabled' false "$CONFIG")" == "true" ]]; then
-    val=$(yq_get '.shell.default_shell' "" "$CONFIG")
-    if [[ -n "$val" ]]; then
-      case "$val" in
-        */*|*' '*)
-          log_fail "shell.default_shell must be a plain binary name: got '$val'"
-          errors=$((errors + 1))
-          ;;
-      esac
-    fi
-  fi
-
-  if (( errors > 0 )); then
-    log_fail "Config validation failed with ${errors} error(s)"
-    return 1
-  fi
-
-  log_ok "Config valid"
-  return 0
-}
 
 if ! validate_config; then
   exit 1
 fi
 
 # ---------------------------------------------------------------------------
+if { ! module_excluded shell && [[ "$(yq_get '.shell.enabled' false "$CONFIG")" == true ]]; } \
+   || { ! module_excluded docker && [[ "$(yq_get '.docker.enabled' false "$CONFIG")" == true ]]; }; then
+  resolve_target_users || exit 1
+  print_kv 'Accounts' "$VM_INIT_TARGET_USERS"
+fi
+VM_INIT_CONFIG_FINGERPRINT=$(printf '%s' "$VM_INIT_CONFIG_JSON" | { if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi; } | awk '{print $1}')
+print_kv 'Run ID' "$VM_INIT_RUN_ID"
+log_info "Using ${VM_INIT_CONFIG_ORIGIN}${VM_INIT_SOURCE_CONFIG:+: $VM_INIT_SOURCE_CONFIG}"
+
 # Preflight: environment facts worth knowing before we start changing things.
 # Only the disk check blocks, because it is the one whose failure mode is a
 # half-installed machine. Set VM_INIT_MIN_DISK_MB=0 to disable it.
@@ -1039,22 +1156,32 @@ dry_run_preview() {
 
   case "$section" in
     apt)
-      list=$(yq '.apt.packages | to_entries | .[].value | .[]' "$CONFIG" 2>/dev/null | sort -u | paste -sd' ' -)
-      _dry_run_line "Would install APT packages: ${_C_BOLD}${list:-<none>}${_C_RESET}"
+      list=$(yq -r '.apt.packages // {} | to_entries | .[].value | .[]' "$CONFIG" 2>/dev/null | sort -u | paste -sd' ' -)
+      _dry_run_line "Selected APT packages: ${_C_BOLD}${list:-<none>}${_C_RESET}"
+      local packages=()
+      read -ra packages <<< "$list"
+      plan_apt_packages "${packages[@]}"
       ;;
     ufw)
+      detect_ssh_connection
       local incoming outgoing rules
-      incoming=$(yq '.ufw.defaults.incoming // "deny"' "$CONFIG")
-      outgoing=$(yq '.ufw.defaults.outgoing // "allow"' "$CONFIG")
-      rules=$(yq '.ufw.allow[]? // ""' "$CONFIG" | paste -sd',' -)
+      incoming=$(yq -r '.ufw.defaults.incoming // "deny"' "$CONFIG")
+      outgoing=$(yq -r '.ufw.defaults.outgoing // "allow"' "$CONFIG")
+      rules=$(ufw_effective_rules | sort -u | paste -sd',' -)
       _dry_run_line "Would configure ufw: incoming=${_C_BOLD}${incoming}${_C_RESET}, outgoing=${_C_BOLD}${outgoing}${_C_RESET}, allow=[${_C_BOLD}${rules}${_C_RESET}]"
+      if is_installed ufw; then
+        local stale
+        stale=$(ufw_stale_rule_numbers "$(ufw_effective_rules)" "$(LC_ALL=C ufw status numbered 2>/dev/null || true)")
+        [[ -z "$stale" ]] || _dry_run_line "Would remove obsolete vm-init rule numbers: $(paste -sd, - <<< "$stale")"
+      fi
+      [[ -z "${SSH_CONNECTION:-}" ]] || _dry_run_line "SSH port ${SSH_CONNECTION##* } is preserved; confirm from a new SSH session within ${VM_INIT_FIREWALL_CONFIRM_SECONDS:-120}s"
       ;;
     fail2ban)
       local f2b_bantime f2b_maxretry f2b_banaction f2b_jails
       f2b_bantime=$(yq_get '.fail2ban.bantime' "1h" "$CONFIG")
       f2b_maxretry=$(yq_get '.fail2ban.maxretry' "5" "$CONFIG")
       f2b_banaction=$(yq_get '.fail2ban.banaction' "auto" "$CONFIG")
-      f2b_jails=$(yq '.fail2ban.jails // {} | to_entries | .[] | select(.value.enabled == true) | .key' "$CONFIG" 2>/dev/null | paste -sd',' -)
+      f2b_jails=$(yq -r '.fail2ban.jails // {} | to_entries | .[] | select(.value.enabled == true) | .key' "$CONFIG" 2>/dev/null | paste -sd',' -)
       _dry_run_line "Would install ${_C_BOLD}fail2ban${_C_RESET} and enable its service"
       _dry_run_line "Policy:       bantime=${_C_BOLD}${f2b_bantime}${_C_RESET}, maxretry=${_C_BOLD}${f2b_maxretry}${_C_RESET}, banaction=${_C_BOLD}${f2b_banaction}${_C_RESET}"
       _dry_run_line "Active jails: ${_C_BOLD}${f2b_jails:-<none>}${_C_RESET}"
@@ -1070,18 +1197,26 @@ dry_run_preview() {
       ;;
     dns)
       local server port
-      server=$(yq '.dns.server // "<unset>"' "$CONFIG")
-      port=$(yq '.dns.listen_port // 5353' "$CONFIG")
+      server=$(dns_upstream_from_config)
+      port=$(yq -r '.dns.listen_port // 5353' "$CONFIG")
       _dry_run_line "Would install dnsproxy and configure systemd-resolved"
       _dry_run_line "Upstream:    ${_C_BOLD}${server}${_C_RESET}"
       _dry_run_line "Listen port: ${_C_BOLD}${port}${_C_RESET}"
+      _dry_run_line 'Would update dnsproxy.service, resolved drop-ins, per-link DNS, and /etc/resolv.conf; failed activation restores the saved state'
       ;;
     docker)
       _dry_run_line "Would install ${_C_BOLD}docker-ce${_C_RESET}, docker-ce-cli, containerd.io, buildx, compose plugin"
-      _dry_run_line "Would add first human user to the ${_C_BOLD}docker${_C_RESET} group"
+      local docker_users='' docker_user
+      for docker_user in ${VM_INIT_TARGET_USERS:-}; do
+        [[ "$docker_user" != root ]] || continue
+        docker_users+="${docker_users:+, }${docker_user}"
+      done
+      if [[ -n "$docker_users" ]]; then
+        _dry_run_line "Would add ${docker_users} to the ${_C_BOLD}docker${_C_RESET} group (new login needed)"
+      fi
       ;;
     python)
-      list=$(yq '.python.tools[] // ""' "$CONFIG" 2>/dev/null | paste -sd',' -)
+      list=$(yq -r '.python.tools[]? // ""' "$CONFIG" 2>/dev/null | paste -sd',' -)
       _dry_run_line "Would install/upgrade pipx tools: ${_C_BOLD}${list:-<none>}${_C_RESET}"
       ;;
     github_tools)
@@ -1092,8 +1227,8 @@ dry_run_preview() {
       ;;
     github_releases)
       local generic custom
-      generic=$(yq '.github_releases.generic[]?.binary // ""' "$CONFIG" 2>/dev/null | paste -sd',' -)
-      custom=$(yq '.github_releases.custom // {} | to_entries | .[] | select(.value == true) | .key' "$CONFIG" 2>/dev/null | paste -sd',' -)
+      generic=$(yq -r '.github_releases.generic[]?.binary // ""' "$CONFIG" 2>/dev/null | paste -sd',' -)
+      custom=$(yq -r '.github_releases.custom // {} | to_entries | .[] | select(.value == true) | .key' "$CONFIG" 2>/dev/null | paste -sd',' -)
       _dry_run_line "Would install generic binaries: ${_C_BOLD}${generic:-<none>}${_C_RESET}"
       _dry_run_line "Would install custom tools:     ${_C_BOLD}${custom:-<none>}${_C_RESET}"
       ;;
@@ -1103,8 +1238,18 @@ dry_run_preview() {
     shell)
       local default_shell aliases
       default_shell=$(yq_get '.shell.default_shell' "fish" "$CONFIG")
-      aliases=$(yq '.shell.aliases // {} | keys | .[]' "$CONFIG" 2>/dev/null | paste -sd',' -)
-      _dry_run_line "Would set default shell: ${_C_BOLD}${default_shell}${_C_RESET}"
+      aliases=$(yq -r '.shell.aliases // {} | keys | .[]' "$CONFIG" 2>/dev/null | paste -sd',' -)
+      _dry_run_line "Would set default shell: ${_C_BOLD}${default_shell}${_C_RESET} for ${VM_INIT_TARGET_USERS:-<choose account>}"
+      _dry_run_line "Required packages: $(shell_required_packages | sort -u | paste -sd, -)"
+      local dependencies=() user home_dir
+      mapfile -t dependencies < <(shell_required_packages | sort -u)
+      plan_apt_packages "${dependencies[@]}"
+      _dry_run_line "Would replace only the managed shell file in each selected account; a new session is needed"
+      if command -v getent >/dev/null; then
+        while IFS=: read -r user home_dir; do
+          _dry_run_line "${user}: $(shell_managed_path "$default_shell" "$home_dir")"
+        done < <(target_users)
+      fi
       _dry_run_line "Would configure aliases: ${_C_BOLD}${aliases:-<none>}${_C_RESET}"
       ;;
     *)
@@ -1157,38 +1302,39 @@ _module_should_run() {
   local section="$1" progress="$2"
   local enabled
 
-  log_section "${section}" "${progress}"
-
   if module_excluded "$section"; then
-    log_skip "excluded by --only/--skip"
+    if [[ "$VM_INIT_VERBOSE" == 1 ]]; then log_skip "${section}: excluded by --only/--skip"; fi
     record_module_status "$section" "skipped" "excluded by filter"
     return 1
   fi
 
   enabled=$(yq_get ".${section}.enabled" false "$CONFIG")
   if [[ "$enabled" != "true" ]]; then
-    log_skip "disabled in config"
+    if [[ "$VM_INIT_VERBOSE" == 1 ]]; then log_skip "${section}: disabled in config"; fi
     record_module_status "$section" "skipped" "disabled in config"
     return 1
   fi
 
+  log_section "${section}" "${progress}"
   return 0
 }
 
 run_module() {
   local section="$1" module_file="$2" entry_func="$3" progress="${4:-}"
-  local rc=0 pre_warn new_warns start_ts elapsed status
+  local rc=0 pre_warn new_warns start_ts elapsed status pre_notes=0 post_notes=0
 
   VM_INIT_LAST_MODULE_RC=0
   _module_should_run "$section" "$progress" || return 0
 
   if [[ "$VM_INIT_DRY_RUN" == "1" ]]; then
+    source_module "$module_file" "$entry_func"
     dry_run_preview "$section"
-    record_module_status "$section" "ok" "dry-run"
+    record_module_status "$section" "ok" "planned; no changes"
     return 0
   fi
 
   pre_warn="${VM_INIT_WARN_COUNT:-0}"
+  if [[ -f "${VM_INIT_NOTES_FILE:-}" ]]; then pre_notes=$(wc -l < "$VM_INIT_NOTES_FILE"); fi
   start_ts=$(date +%s)
 
   source_module "$module_file" "$entry_func"
@@ -1201,9 +1347,13 @@ run_module() {
   elapsed=$(( $(date +%s) - start_ts ))
   new_warns=$(( ${VM_INIT_WARN_COUNT:-0} - pre_warn ))
 
+  if [[ -f "${VM_INIT_NOTES_FILE:-}" ]]; then post_notes=$(wc -l < "$VM_INIT_NOTES_FILE"); fi
   if (( rc != 0 )); then
     status="failed"
     record_module_status "$section" "$status" "exit ${rc}" "$elapsed"
+  elif (( post_notes > pre_notes )); then
+    status="warned"
+    record_module_status "$section" "$status" "see next steps" "$elapsed"
   elif (( new_warns > 0 )); then
     status="warned"
     record_module_status "$section" "$status" "${new_warns} warning(s)" "$elapsed"
@@ -1270,15 +1420,46 @@ verify_module() {
   return 0
 }
 
-VM_INIT_TOTAL_MODULES=${#VM_INIT_MODULES[@]}
+if [[ "$VM_INIT_SETUP" == 1 && "$VM_INIT_DRY_RUN" != 1 ]]; then
+  setup_rc=0
+  confirm_setup_plan || setup_rc=$?
+  if [[ "$setup_rc" == 2 ]]; then exit 0; elif [[ "$setup_rc" != 0 ]]; then exit 1; fi
+fi
+if [[ "$VM_INIT_DRY_RUN" != 1 && "$VM_INIT_VERIFY" != 1 ]]; then
+  save_run_context || exit 1
+  CONFIG="$VM_INIT_RETRY_CONFIG"
+  state_set last.force "$VM_INIT_FORCE"
+  state_set last.no_upgrade "$VM_INIT_NO_UPGRADE"
+  state_set last.failed ''
+fi
+
+VM_INIT_TOTAL_MODULES=0
+VM_INIT_PENDING_MODULES=''
+for spec in "${VM_INIT_MODULES[@]}"; do
+  section="${spec%%:*}"
+  if ! module_excluded "$section" && [[ "$(yq_get ".${section}.enabled" false "$CONFIG")" == true ]]; then
+    VM_INIT_TOTAL_MODULES=$((VM_INIT_TOTAL_MODULES + 1))
+    VM_INIT_PENDING_MODULES+="${VM_INIT_PENDING_MODULES:+,}${section}"
+  fi
+done
+if [[ "$VM_INIT_DRY_RUN" != 1 && "$VM_INIT_VERIFY" != 1 ]]; then
+  state_set last.failed "$VM_INIT_PENDING_MODULES"
+fi
+if [[ "$VM_INIT_TOTAL_MODULES" == 0 ]]; then log_info 'No modules selected; nothing to apply or verify.'; fi
 VM_INIT_MODULE_INDEX=0
 VM_INIT_ABORTED=0
 for module_spec in "${VM_INIT_MODULES[@]}"; do
   IFS=':' read -r section module_file entry_func <<< "$module_spec"
-  VM_INIT_MODULE_INDEX=$((VM_INIT_MODULE_INDEX + 1))
+  if ! module_excluded "$section" && [[ "$(yq_get ".${section}.enabled" false "$CONFIG")" == true ]]; then
+    VM_INIT_MODULE_INDEX=$((VM_INIT_MODULE_INDEX + 1))
+  fi
 
   if (( VM_INIT_ABORTED )); then
-    record_module_status "$section" "skipped" "not reached (--fail-fast)"
+    if ! module_excluded "$section" && [[ "$(yq_get ".${section}.enabled" false "$CONFIG")" == true ]]; then
+      record_module_status "$section" "warned" 'not run after earlier failure'
+    else
+      record_module_status "$section" "skipped" 'not selected'
+    fi
     continue
   fi
 
@@ -1291,6 +1472,14 @@ for module_spec in "${VM_INIT_MODULES[@]}"; do
       "${VM_INIT_MODULE_INDEX}/${VM_INIT_TOTAL_MODULES}"
   fi
 
+  if [[ "$VM_INIT_DRY_RUN" != 1 && "$VM_INIT_VERIFY" != 1 && "$VM_INIT_LAST_MODULE_RC" == 0 ]]; then
+    VM_INIT_PENDING_MODULES=",${VM_INIT_PENDING_MODULES},"
+    VM_INIT_PENDING_MODULES="${VM_INIT_PENDING_MODULES/,$section,/,}"
+    VM_INIT_PENDING_MODULES="${VM_INIT_PENDING_MODULES#,}"
+    VM_INIT_PENDING_MODULES="${VM_INIT_PENDING_MODULES%,}"
+    state_set last.failed "$VM_INIT_PENDING_MODULES"
+  fi
+
   if (( VM_INIT_LAST_MODULE_RC != 0 )) && [[ "$VM_INIT_FAIL_FAST" == "1" ]]; then
     VM_INIT_ABORTED=1
     log_fail "Stopping after ${section} (--fail-fast)"
@@ -1301,6 +1490,21 @@ done
 # Summary
 # ---------------------------------------------------------------------------
 
+# Firewall confirmation/rollback can finish while later modules are running.
+if [[ "$VM_INIT_DRY_RUN" != 1 && "$VM_INIT_VERIFY" != 1 && -f "$VM_INIT_STATE_DIR/firewall-result" ]]; then
+  read -r firewall_run firewall_result < "$VM_INIT_STATE_DIR/firewall-result"
+  if [[ "$firewall_run" == "$VM_INIT_RUN_ID" ]]; then
+    for ((i=0; i<${#VM_INIT_MODULE_NAMES[@]}; i++)); do
+      [[ "${VM_INIT_MODULE_NAMES[$i]}" == ufw && "${VM_INIT_MODULE_STATUS[$i]}" != failed ]] || continue
+      case "$firewall_result" in
+        rolled_back) VM_INIT_MODULE_STATUS[i]=failed; VM_INIT_MODULE_DETAIL[i]='confirmation expired; previous firewall restored' ;;
+        confirmed) VM_INIT_MODULE_STATUS[i]=ok; VM_INIT_MODULE_DETAIL[i]='confirmed from a new session' ;;
+      esac
+      state_set module.ufw.status "${VM_INIT_MODULE_STATUS[$i]}"
+    done
+  fi
+fi
+
 # Render one summary row: symbol, module, optional detail, optional duration.
 _summary_row() {
   local color="$1" sym="$2" name="$3" detail="$4" secs="$5"
@@ -1310,13 +1514,13 @@ _summary_row() {
   # Pad the detail column only when a duration follows it, so rows without one
   # do not trail whitespace.
   if [[ -n "$dur" ]]; then
-    printf "  ${color}%-4s${_C_RESET} %-18s ${_C_DIM}%-26s%s${_C_RESET}\n" \
+    printf "  ${color}%-13s${_C_RESET} %-18s ${_C_DIM}%-26s%s${_C_RESET}\n" \
       "$sym" "$name" "$suffix" "$dur"
   elif [[ -n "$suffix" ]]; then
-    printf "  ${color}%-4s${_C_RESET} %-18s ${_C_DIM}%s${_C_RESET}\n" \
+    printf "  ${color}%-13s${_C_RESET} %-18s ${_C_DIM}%s${_C_RESET}\n" \
       "$sym" "$name" "$suffix"
   else
-    printf "  ${color}%-4s${_C_RESET} %-18s\n" "$sym" "$name"
+    printf "  ${color}%-13s${_C_RESET} %-18s\n" "$sym" "$name"
   fi
 }
 
@@ -1330,6 +1534,7 @@ print_next_steps() {
   local note
   while IFS= read -r note; do
     [[ -z "$note" ]] && continue
+    if [[ "$note" == 'Confirm firewall changes'* && ! -f "$VM_INIT_STATE_DIR/firewall-pending" ]]; then continue; fi
     echo -e "  ${_C_CYAN}${_SYM_BULLET}${_C_RESET} ${note}"
   done < <(awk '!seen[$0]++' "$VM_INIT_NOTES_FILE")
 }
@@ -1359,24 +1564,30 @@ print_summary() {
     case "$status" in
       ok)
         ok=$((ok + 1))
-        _summary_row "${_C_GREEN}" "${_SYM_OK}" "$name" "$detail" "$secs"
+        if [[ "$VM_INIT_DRY_RUN" == 1 ]]; then
+          _summary_row "${_C_CYAN}" 'Planned' "$name" "$detail" "$secs"
+        else
+          _summary_row "${_C_GREEN}" 'Ready' "$name" "$detail" "$secs"
+        fi
         ;;
       skipped)
         skip=$((skip + 1))
-        _summary_row "${_C_DIM}" "${_SYM_SKIP}" "$name" "$detail" "$secs"
+        if [[ "$VM_INIT_VERBOSE" == 1 ]]; then _summary_row "${_C_DIM}" "${_SYM_SKIP}" "$name" "$detail" "$secs"; fi
         ;;
       warned)
         warn=$((warn + 1))
-        _summary_row "${_C_YELLOW}" "${_SYM_WARN}" "$name" "$detail" "$secs"
+        if [[ "$detail" == 'not run after earlier failure' ]]; then failed_names+="${name},"; fi
+        _summary_row "${_C_YELLOW}" "Needs action" "$name" "$detail" "$secs"
         ;;
       failed)
         fail=$((fail + 1))
         failed_names+="${name},"
-        _summary_row "${_C_RED}" "${_SYM_FAIL}" "$name" "$detail" "$secs"
+        _summary_row "${_C_RED}" "Failed" "$name" "$detail" "$secs"
         ;;
     esac
   done
 
+  if (( skip > 0 )); then printf '  Not selected: %d modules (use --list-modules for details)\n' "$skip"; fi
   echo ""
   print_rule 60
   printf "  ${_C_GREEN}ok${_C_RESET}: %d   ${_C_DIM}skipped${_C_RESET}: %d   ${_C_YELLOW}warned${_C_RESET}: %d   ${_C_RED}failed${_C_RESET}: %d   ${_C_DIM}elapsed: %s${_C_RESET}\n" \
@@ -1397,20 +1608,19 @@ print_summary() {
 
   # Print notes before the pass/fail verdict: a pending reboot does not stop
   # mattering because some other module had a bad day.
-  if [[ "$VM_INIT_VERIFY" != "1" ]]; then
-    print_next_steps
-  fi
+  print_next_steps
 
+  if [[ "$VM_INIT_DRY_RUN" != 1 && "$VM_INIT_VERIFY" != 1 ]]; then state_set last.failed "${failed_names%,}"; fi
   if (( fail > 0 )); then
     echo ""
     if [[ "$VM_INIT_VERIFY" == "1" ]]; then
       echo -e "  ${_C_RED}${_C_BOLD}${_SYM_FAIL} Some modules did not verify.${_C_RESET}"
-      echo -e "  ${_C_DIM}Re-provision just those:${_C_RESET}  ${_C_CYAN}sudo ${SCRIPT_NAME} --only ${failed_names%,}${_C_RESET}"
+      echo -e "  ${_C_DIM}Re-provision just those:${_C_RESET}  ${_C_CYAN}$(retry_command apply "${failed_names%,}")${_C_RESET}"
     else
       echo -e "  ${_C_RED}${_C_BOLD}${_SYM_FAIL} Some modules failed.${_C_RESET} Review output above or in the log file."
       # Name the exact re-run rather than leaving the reader to reconstruct it.
-      echo -e "  ${_C_DIM}Re-run just what failed:${_C_RESET}  ${_C_CYAN}sudo ${SCRIPT_NAME} --only ${failed_names%,} --verbose${_C_RESET}"
-      echo -e "  ${_C_DIM}Check current state:${_C_RESET}      ${_C_CYAN}sudo ${SCRIPT_NAME} --verify${_C_RESET}"
+      echo -e "  ${_C_DIM}Re-run just what failed:${_C_RESET}  ${_C_CYAN}$(retry_command apply "${failed_names%,}")${_C_RESET}"
+      echo -e "  ${_C_DIM}Check current state:${_C_RESET}      ${_C_CYAN}$(retry_command status)${_C_RESET}"
     fi
     return 1
   fi
@@ -1434,10 +1644,12 @@ print_summary() {
 
   echo ""
   log_done "Setup complete."
-  echo -e "  Verify at any time with: ${_C_CYAN}${_C_BOLD}sudo ${SCRIPT_NAME} --verify${_C_RESET}"
+  echo -e "  Verify at any time with: ${_C_CYAN}${_C_BOLD}$(retry_command status)${_C_RESET}"
   return 0
 }
 
-if ! print_summary; then
-  exit 1
+if [[ "$VM_INIT_JSON" == 1 ]]; then
+  print_json_summary
+else
+  print_summary
 fi

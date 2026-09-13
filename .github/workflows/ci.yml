@@ -86,7 +86,7 @@ jobs:
       - name: Install bats
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq bats jq
+          sudo apt-get install -y -qq bats jq yq python3 fish
 
       - name: Run bats unit tests
         run: |
@@ -111,6 +111,7 @@ jobs:
         shell: bash
     env:
       DEBIAN_FRONTEND: noninteractive
+      SUDO_USER: root
       TZ: UTC
       # Ensure /usr/local/bin is on PATH for yq/task installed below.
       PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -122,7 +123,8 @@ jobs:
           apt-get install -y -qq --no-install-recommends \
             bash coreutils findutils sed grep gawk tar gzip xz-utils \
             curl ca-certificates git sudo \
-            bats jq
+            bats jq python3 util-linux
+          useradd --create-home vm-init-test
 
       - uses: actions/checkout@v6
 
@@ -186,10 +188,12 @@ jobs:
         run: |
           set -euo pipefail
           cat > ci-real-install.yml <<'YAML'
+          users: [vm-init-ci, vm-init-ci-two]
           apt:
             enabled: true
             packages:
               cli: [jq]
+              shell: [fish, lsd, bat, zoxide]
               extra: []
           ufw: {enabled: false}
           fail2ban: {enabled: false}
@@ -198,25 +202,54 @@ jobs:
           python: {enabled: false}
           github_tools: {enabled: false}
           github_releases: {enabled: false}
-          shell: {enabled: false}
+          shell:
+            enabled: true
+            default_shell: fish
+            fisher: false
+            tide: false
+            zoxide: true
+            direnv: false
+            aliases: {ll: "lsd -l", cat: bat}
           YAML
+          sudo useradd --create-home --shell /bin/bash vm-init-ci
+          sudo useradd --create-home --shell /bin/bash vm-init-ci-two
+          sudo useradd --create-home --shell /bin/bash vm-init-untouched
 
       - name: Validate selected modules from CI config
         run: |
           set -euo pipefail
           ./vm-init.sh --list-modules --config ci-real-install.yml
 
-      - name: Run real vm-init apt install pass
+      - name: Run real package and account setup
         run: |
           set -euo pipefail
-          sudo ./vm-init.sh --config ci-real-install.yml --only apt
+          sudo ./vm-init.sh --config ci-real-install.yml --only apt,shell
 
       - name: Run second pass to verify repeat execution
         run: |
           set -euo pipefail
-          sudo ./vm-init.sh --config ci-real-install.yml --only apt
+          sudo ./vm-init.sh --config ci-real-install.yml --only apt,shell
 
       - name: Verify the installed state
         run: |
           set -euo pipefail
-          sudo ./vm-init.sh --config ci-real-install.yml --verify --only apt
+          sudo ./vm-init.sh --config ci-real-install.yml --verify --only apt,shell
+          test "$(getent passwd vm-init-untouched | cut -d: -f7)" = /bin/bash
+          sudo ./vm-init.sh status --json --config ci-real-install.yml > status.json
+          jq -e 'all(.modules[]; .status != "failed")' status.json
+          for account in vm-init-ci vm-init-ci-two; do
+            test "$(sudo stat -c %U "/home/$account/.config/fish/conf.d/90-vm-init.fish")" = "$account"
+          done
+
+      - name: Refuse shell writes redirected to a protected directory
+        run: |
+          set -euo pipefail
+          sudo mkdir -m 0755 /var/tmp/vm-init-ci-protected
+          sudo rm -r /home/vm-init-ci-two/.config/fish/conf.d
+          sudo -u vm-init-ci-two ln -s /var/tmp/vm-init-ci-protected /home/vm-init-ci-two/.config/fish/conf.d
+          if sudo ./vm-init.sh apply --config ci-real-install.yml --only shell --user vm-init-ci-two --no-upgrade; then
+            echo 'Shell setup unexpectedly wrote to a protected directory'
+            exit 1
+          fi
+          test "$(stat -c %U /var/tmp/vm-init-ci-protected)" = root
+          test ! -e /var/tmp/vm-init-ci-protected/90-vm-init.fish
