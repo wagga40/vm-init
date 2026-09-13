@@ -333,6 +333,24 @@ PY
   [ "$status" -eq 1 ]
 }
 
+@test "Fish aliases and Fisher use the account home despite inherited XDG paths" {
+  command -v fish >/dev/null || skip 'requires fish'
+  source "$VM_INIT_REPO_ROOT/modules/shell.sh"
+  export CONFIG="$TEST_TMPDIR/shell.yml"
+  echo 'shell: {aliases: {ll: "ls -l"}}' > "$CONFIG"
+  mkdir -p "$TEST_TMPDIR/account/.config/fish/conf.d" "$TEST_TMPDIR/account/.config/fish/functions" "$TEST_TMPDIR/invoker/fish"
+  render_shell_config fish > "$TEST_TMPDIR/account/.config/fish/conf.d/90-vm-init.fish"
+  printf 'function fisher\nend\n' > "$TEST_TMPDIR/account/.config/fish/functions/fisher.fish"
+  echo 'alias ll "ls -a"' > "$TEST_TMPDIR/invoker/fish/config.fish"
+  run env HOME="$TEST_TMPDIR/account" XDG_CONFIG_HOME="$TEST_TMPDIR/invoker" \
+    XDG_DATA_HOME="$TEST_TMPDIR/invoker-data" XDG_CACHE_HOME="$TEST_TMPDIR/invoker-cache" \
+    XDG_STATE_HOME="$TEST_TMPDIR/invoker-state" XDG_RUNTIME_DIR="$TEST_TMPDIR/invoker-runtime" \
+    bash -c 'set -e; source "$VM_INIT_COMMON_SH"; source "$VM_INIT_REPO_ROOT/modules/shell.sh"; fish_aliases_match_for root; fisher_present_for root'
+  [ "$status" -eq 0 ]
+  [ ! -e "$TEST_TMPDIR/invoker/fish/fish_variables" ]
+  [ ! -e "$TEST_TMPDIR/invoker-data" ]
+}
+
 @test "mutation lock excludes unrelated runs and permits an inherited preparation child" {
   command -v flock >/dev/null || skip 'requires Linux flock'
   export VM_INIT_STATE_DIR="$TEST_TMPDIR/state"

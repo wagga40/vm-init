@@ -4,7 +4,7 @@
 
 # Run `fish -c <cmd>` as <user>.
 #
-# Three wrinkles this handles:
+# Account-specific process setup:
 #   * The `cd /` is not cosmetic: vm-init normally runs with cwd=/root (mode
 #     0700), which the target user cannot open, and fish then aborts the
 #     command with "Unable to open the current working directory".
@@ -15,13 +15,16 @@
 #     account after the first is silently skipped.
 #   * Hopping through `sh -c` (rather than a subshell `cd`) keeps sudo as the
 #     outer command so run_quiet still applies its timeout.
+#   * sudo can preserve the invoking account's XDG paths even with -H.
+#     Clear those paths so Fish and its plugins use the selected account's
+#     home, matching the location of the managed configuration files.
 run_fish_as() {
   local user="$1" fish_cmd="$2"
   # shellcheck disable=SC2016  # "$1" is sh's positional arg, not ours
   if [[ "$user" == "root" ]]; then
-    run_quiet sh -c 'cd / && exec fish -c "$1"' _ "$fish_cmd" < /dev/null
+    run_quiet sh -c 'unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME XDG_RUNTIME_DIR; cd / && exec fish -c "$1"' _ "$fish_cmd" < /dev/null
   else
-    run_quiet sudo -u "$user" -H sh -c 'cd / && exec fish -c "$1"' _ "$fish_cmd" < /dev/null
+    run_quiet sudo -u "$user" -H sh -c 'unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME XDG_RUNTIME_DIR; cd / && exec fish -c "$1"' _ "$fish_cmd" < /dev/null
   fi
 }
 
@@ -30,12 +33,7 @@ run_fish_as() {
 # about a human user (who may have been added after the first run, or had their
 # home recreated). `functions -q` triggers fish's autoloader and stays silent.
 fisher_present_for() {
-  local user="$1"
-  if [[ "$user" == "root" ]]; then
-    sh -c 'cd / && exec fish -c "functions -q fisher"' < /dev/null >/dev/null 2>&1
-  else
-    sudo -u "$user" -H sh -c 'cd / && exec fish -c "functions -q fisher"' < /dev/null >/dev/null 2>&1
-  fi
+  run_fish_as "$1" 'functions -q fisher' >/dev/null 2>&1
 }
 
 install_fisher_tide() {
