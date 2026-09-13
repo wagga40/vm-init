@@ -36,6 +36,7 @@ DEFAULT_YML="${REPO_ROOT}/vm-init.yml"
 MODULES=(
   "${REPO_ROOT}/modules/_config.sh"
   "${REPO_ROOT}/modules/_safety.sh"
+  "${REPO_ROOT}/modules/_reconcile.sh"
   "${REPO_ROOT}/modules/_recovery.sh"
   "${REPO_ROOT}/modules/_actions.sh"
   "${REPO_ROOT}/modules/apt.sh"

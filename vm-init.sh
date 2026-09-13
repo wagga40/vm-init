@@ -41,6 +41,10 @@ if ! declare -F setup_wizard >/dev/null; then
   # shellcheck source=modules/_actions.sh
   source "${MODULES_DIR}/_actions.sh"
 fi
+if ! declare -F reconcile_decide >/dev/null; then
+  # shellcheck source=modules/_reconcile.sh
+  source "${MODULES_DIR}/_reconcile.sh"
+fi
 VM_INIT_EXECUTABLE="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 
 # Default-config emitter. In the repo layout this reads vm-init.yml from
@@ -362,6 +366,7 @@ run_update_cmd() {
 VM_INIT_RUN_MODE="$(detect_run_mode)"
 
 export VM_INIT_FORCE=0
+export VM_INIT_RESTORE_CONFIG=0
 export VM_INIT_NO_UPGRADE=0
 export VM_INIT_VERBOSE=0
 export VM_INIT_NO_LOG=0
@@ -462,6 +467,7 @@ usage() {
   _usage_opt "--fail-fast"        "Stop at the first failed module instead of continuing"
   _usage_opt "--update, -u"           "Update vm-init (mode-aware behavior)"
   _usage_opt "--force, -f"            "Reinstall/overwrite all tools"
+  _usage_opt "--restore-config"       "Restore managed configuration to the selected YAML"
   _usage_opt "--no-upgrade"           "Skip update checks for already-installed tools (default is upgrade-aware)"
   _usage_opt "--verbose"          "Show full command output (default: quiet)"
   echo ""
@@ -538,6 +544,7 @@ while [[ $# -gt 0 ]]; do
     --list-modules|-l)       VM_INIT_LIST_MODULES=1; shift ;;
     --write-default-config|-w) VM_INIT_WRITE_DEFAULT_CONFIG=1; shift ;;
     --force|-f)              export VM_INIT_FORCE=1; shift ;;
+    --restore-config)        export VM_INIT_RESTORE_CONFIG=1; shift ;;
     --no-upgrade)             export VM_INIT_NO_UPGRADE=1; shift ;;
     --verbose)                export VM_INIT_VERBOSE=1; shift ;;
     --no-log)                 export VM_INIT_NO_LOG=1; shift ;;
@@ -588,6 +595,9 @@ if [[ "$VM_INIT_VERIFY" == "1" && "$VM_INIT_DRY_RUN" == "1" ]]; then
 fi
 
 # Every mode conflict is rejected before writes, installs, update checks, or repair.
+if [[ "$VM_INIT_RESTORE_CONFIG" == 1 ]] && { (( VM_INIT_DO_UPDATE + VM_INIT_WRITE_DEFAULT_CONFIG + VM_INIT_LIST_MODULES + VM_INIT_PREPARE + VM_INIT_VERIFY > 0 )) || [[ -n "$VM_INIT_REPAIR" && "$VM_INIT_REPAIR" != failed ]]; }; then
+  log_fail '--restore-config requires apply, setup, plan, or repair failed'; exit 1
+fi
 if (( VM_INIT_DO_UPDATE + VM_INIT_WRITE_DEFAULT_CONFIG + VM_INIT_LIST_MODULES + VM_INIT_PREPARE + VM_INIT_VERIFY + VM_INIT_DRY_RUN > 1 )) \
    || { [[ -n "$VM_INIT_REPAIR" ]] && (( VM_INIT_DO_UPDATE + VM_INIT_WRITE_DEFAULT_CONFIG + VM_INIT_LIST_MODULES + VM_INIT_PREPARE + VM_INIT_VERIFY + VM_INIT_DRY_RUN + VM_INIT_SETUP > 0 )); } \
    || { [[ "$VM_INIT_SETUP" == 1 ]] && (( VM_INIT_DO_UPDATE + VM_INIT_WRITE_DEFAULT_CONFIG + VM_INIT_LIST_MODULES + VM_INIT_PREPARE + VM_INIT_VERIFY > 0 )); }; then
@@ -674,6 +684,7 @@ VM_INIT_EMBEDDED_CONFIG_TMP=""
 VM_INIT_TALLY_FILE=""
 VM_INIT_NOTES_FILE=""
 _vm_init_cleanup() {
+  if [[ -n "${VM_INIT_RECONCILE_REPORT:-}" ]]; then rm -f "$VM_INIT_RECONCILE_REPORT"; fi
   [[ -z "${VM_INIT_SETUP_TMP:-}" ]] || rm -f "$VM_INIT_SETUP_TMP"
   if [[ -n "${VM_INIT_EMBEDDED_CONFIG_TMP:-}" && -f "${VM_INIT_EMBEDDED_CONFIG_TMP}" ]]; then
     rm -f "$VM_INIT_EMBEDDED_CONFIG_TMP"
@@ -686,6 +697,8 @@ _vm_init_cleanup() {
   fi
 }
 trap _vm_init_cleanup EXIT
+VM_INIT_RECONCILE_REPORT=$(mktemp)
+export VM_INIT_RECONCILE_REPORT
 
 if [[ "$CONFIG_EXPLICIT" != "1" && ! -f "$CONFIG" ]] \
    && declare -F _emit_default_config >/dev/null 2>&1; then
@@ -1151,115 +1164,73 @@ _dry_run_line() {
 }
 
 dry_run_preview() {
-  local section="$1"
-  local val list
-
+  local VM_INIT_DRY_RUN=1
+  local section="$1" inspect_func="inspect_$1" configuration list user home_dir shell
+  local packages=()
+  if declare -F "$inspect_func" >/dev/null; then
+    inspect_configuration "$section" || true
+    configuration=$(reconcile_summary "$section")
+    _dry_run_line "Configuration: $(jq -r '.configuration_state' <<< "$configuration")"
+    jq -r '.differences[] | "    \(.resource): \(.reason)"' <<< "$configuration"
+    if [[ "${VM_INIT_VERBOSE:-0}" == 1 ]]; then
+      jq -r '.differences[] | "      expected: \(.expected)\n      observed: \(.observed)"' <<< "$configuration"
+    fi
+  fi
   case "$section" in
     apt)
-      list=$(yq -r '.apt.packages // {} | to_entries | .[].value | .[]' "$CONFIG" 2>/dev/null | sort -u | paste -sd' ' -)
-      _dry_run_line "Selected APT packages: ${_C_BOLD}${list:-<none>}${_C_RESET}"
-      local packages=()
+      list=$(yq -r '.apt.packages // {} | to_entries | .[].value | .[]' "$CONFIG" | sort -u | paste -sd' ' -)
+      _dry_run_line "Selected APT packages: ${list:-<none>}"
       read -ra packages <<< "$list"
       plan_apt_packages "${packages[@]}"
       ;;
     ufw)
-      detect_ssh_connection
-      local incoming outgoing rules
-      incoming=$(yq -r '.ufw.defaults.incoming // "deny"' "$CONFIG")
-      outgoing=$(yq -r '.ufw.defaults.outgoing // "allow"' "$CONFIG")
-      rules=$(ufw_effective_rules | sort -u | paste -sd',' -)
-      _dry_run_line "Would configure ufw: incoming=${_C_BOLD}${incoming}${_C_RESET}, outgoing=${_C_BOLD}${outgoing}${_C_RESET}, allow=[${_C_BOLD}${rules}${_C_RESET}]"
-      if is_installed ufw; then
-        local stale
-        stale=$(ufw_stale_rule_numbers "$(ufw_effective_rules)" "$(LC_ALL=C ufw status numbered 2>/dev/null || true)")
-        [[ -z "$stale" ]] || _dry_run_line "Would remove obsolete vm-init rule numbers: $(paste -sd, - <<< "$stale")"
+      _dry_run_line "Requested policies: incoming=$(yq_get '.ufw.defaults.incoming' deny "$CONFIG"), outgoing=$(yq_get '.ufw.defaults.outgoing' allow "$CONFIG")"
+      _dry_run_line "Requested allow rules: $(ufw_effective_rules | sort -u | paste -sd, -)"
+      if [[ "$(jq -r '.configuration_state' <<< "$configuration")" == pending && -n "${SSH_CONNECTION:-}" ]]; then
+        _dry_run_line 'A firewall change requires confirmation from a new SSH session; rollback remains automatic'
       fi
-      [[ -z "${SSH_CONNECTION:-}" ]] || _dry_run_line "SSH port ${SSH_CONNECTION##* } is preserved; confirm from a new SSH session within ${VM_INIT_FIREWALL_CONFIRM_SECONDS:-120}s"
       ;;
     fail2ban)
-      local f2b_bantime f2b_maxretry f2b_banaction f2b_jails
-      f2b_bantime=$(yq_get '.fail2ban.bantime' "1h" "$CONFIG")
-      f2b_maxretry=$(yq_get '.fail2ban.maxretry' "5" "$CONFIG")
-      f2b_banaction=$(yq_get '.fail2ban.banaction' "auto" "$CONFIG")
-      f2b_jails=$(yq -r '.fail2ban.jails // {} | to_entries | .[] | select(.value.enabled == true) | .key' "$CONFIG" 2>/dev/null | paste -sd',' -)
-      _dry_run_line "Would install ${_C_BOLD}fail2ban${_C_RESET} and enable its service"
-      _dry_run_line "Policy:       bantime=${_C_BOLD}${f2b_bantime}${_C_RESET}, maxretry=${_C_BOLD}${f2b_maxretry}${_C_RESET}, banaction=${_C_BOLD}${f2b_banaction}${_C_RESET}"
-      _dry_run_line "Active jails: ${_C_BOLD}${f2b_jails:-<none>}${_C_RESET}"
+      _dry_run_line "Requested policy: bantime=$(yq_get '.fail2ban.bantime' 1h "$CONFIG"), maxretry=$(yq_get '.fail2ban.maxretry' 5 "$CONFIG"), banaction=$(yq_get '.fail2ban.banaction' auto "$CONFIG")"
       ;;
     kernel)
-      local mitigations_off
-      mitigations_off=$(yq_get '.kernel.mitigations_off' false "$CONFIG")
-      if [[ "$mitigations_off" == "true" ]]; then
-        _dry_run_line "Would add ${_C_BOLD}mitigations=off${_C_RESET} to GRUB_CMDLINE_LINUX_DEFAULT and run update-grub (reboot required)"
-      else
-        _dry_run_line "Would ensure ${_C_BOLD}mitigations=off${_C_RESET} is absent from GRUB_CMDLINE_LINUX_DEFAULT"
-      fi
+      _dry_run_line "Requested boot parameter: mitigations_off=$(yq_get '.kernel.mitigations_off' false "$CONFIG")"
       ;;
     dns)
-      local server port
-      server=$(dns_upstream_from_config)
-      port=$(yq -r '.dns.listen_port // 5353' "$CONFIG")
-      _dry_run_line "Would install dnsproxy and configure systemd-resolved"
-      _dry_run_line "Upstream:    ${_C_BOLD}${server}${_C_RESET}"
-      _dry_run_line "Listen port: ${_C_BOLD}${port}${_C_RESET}"
-      _dry_run_line 'Would update dnsproxy.service, resolved drop-ins, per-link DNS, and /etc/resolv.conf; failed activation restores the saved state'
-      ;;
-    docker)
-      _dry_run_line "Would install ${_C_BOLD}docker-ce${_C_RESET}, docker-ce-cli, containerd.io, buildx, compose plugin"
-      local docker_users='' docker_user
-      for docker_user in ${VM_INIT_TARGET_USERS:-}; do
-        [[ "$docker_user" != root ]] || continue
-        docker_users+="${docker_users:+, }${docker_user}"
-      done
-      if [[ -n "$docker_users" ]]; then
-        _dry_run_line "Would add ${docker_users} to the ${_C_BOLD}docker${_C_RESET} group (new login needed)"
-      fi
-      ;;
-    python)
-      list=$(yq -r '.python.tools[]? // ""' "$CONFIG" 2>/dev/null | paste -sd',' -)
-      _dry_run_line "Would install/upgrade pipx tools: ${_C_BOLD}${list:-<none>}${_C_RESET}"
-      ;;
-    github_tools)
-      local gh act
-      gh=$(yq_get '.github_tools.gh' true "$CONFIG")
-      act=$(yq_get '.github_tools.act' true "$CONFIG")
-      _dry_run_line "Would install: gh=${_C_BOLD}${gh}${_C_RESET}, act=${_C_BOLD}${act}${_C_RESET}"
-      ;;
-    github_releases)
-      local generic custom
-      generic=$(yq -r '.github_releases.generic[]?.binary // ""' "$CONFIG" 2>/dev/null | paste -sd',' -)
-      custom=$(yq -r '.github_releases.custom // {} | to_entries | .[] | select(.value == true) | .key' "$CONFIG" 2>/dev/null | paste -sd',' -)
-      _dry_run_line "Would install generic binaries: ${_C_BOLD}${generic:-<none>}${_C_RESET}"
-      _dry_run_line "Would install custom tools:     ${_C_BOLD}${custom:-<none>}${_C_RESET}"
-      ;;
-    yazi)
-      _dry_run_line "Would add the Yazi apt repository and install ${_C_BOLD}yazi${_C_RESET}"
+      _dry_run_line "Requested DNS: $(dns_upstream_from_config), listener $(yq_get '.dns.listen_address' 127.0.0.1 "$CONFIG"):$(yq_get '.dns.listen_port' 5353 "$CONFIG")"
       ;;
     shell)
-      local default_shell aliases
-      default_shell=$(yq_get '.shell.default_shell' "fish" "$CONFIG")
-      aliases=$(yq -r '.shell.aliases // {} | keys | .[]' "$CONFIG" 2>/dev/null | paste -sd',' -)
-      _dry_run_line "Would set default shell: ${_C_BOLD}${default_shell}${_C_RESET} for ${VM_INIT_TARGET_USERS:-<choose account>}"
+      shell=$(yq_get '.shell.default_shell' fish "$CONFIG")
       _dry_run_line "Required packages: $(shell_required_packages | sort -u | paste -sd, -)"
-      local dependencies=() user home_dir
-      mapfile -t dependencies < <(shell_required_packages | sort -u)
-      plan_apt_packages "${dependencies[@]}"
-      _dry_run_line "Would replace only the managed shell file in each selected account; a new session is needed"
-      if command -v getent >/dev/null; then
-        while IFS=: read -r user home_dir; do
-          _dry_run_line "${user}: $(shell_managed_path "$default_shell" "$home_dir")"
-        done < <(target_users)
-      fi
-      _dry_run_line "Would configure aliases: ${_C_BOLD}${aliases:-<none>}${_C_RESET}"
+      mapfile -t packages < <(shell_required_packages | sort -u)
+      plan_apt_packages "${packages[@]}"
+      while IFS=: read -r user home_dir; do
+        _dry_run_line "${user}: $(shell_managed_path "$shell" "$home_dir")"
+      done < <(target_users)
+      _dry_run_line 'Software upgrades follow --no-upgrade/--force; session reminders require an actual change'
       ;;
-    *)
-      _dry_run_line "${_C_DIM}(no preview available for ${section})${_C_RESET}"
+    docker)
+      _dry_run_line 'Software: Docker Engine, CLI, containerd, Buildx and Compose (existing upgrade controls apply)'
+      plan_apt_packages docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      ;;
+    yazi)
+      _dry_run_line 'Software: yazi (existing upgrade controls apply)'
+      plan_apt_packages yazi
+      ;;
+    python)
+      list=$(yq -r '.python.tools[]? // ""' "$CONFIG" | paste -sd, -)
+      _dry_run_line "Would install/upgrade pipx tools: ${list:-<none>}"
+      ;;
+    github_tools)
+      _dry_run_line "Selected software: gh=$(yq_get '.github_tools.gh' true "$CONFIG"), act=$(yq_get '.github_tools.act' true "$CONFIG")"
+      ;;
+    github_releases)
+      list=$(yq -r '.github_releases.generic[]?.binary // ""' "$CONFIG" | paste -sd, -)
+      _dry_run_line "Would install generic binaries: ${list:-<none>}"
+      list=$(yq -r '.github_releases.custom // {} | to_entries | .[] | select(.value == true) | .key' "$CONFIG" | paste -sd, -)
+      _dry_run_line "Would install custom tools: ${list:-<none>}"
       ;;
   esac
-  val=$(yq_get ".${section}.enabled" false "$CONFIG")
-  if [[ "$val" != "true" ]]; then
-    echo -e "  ${_C_DIM}(module is disabled in config — would not run)${_C_RESET}"
-  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1370,6 +1341,15 @@ run_module() {
   new_warns=$(( ${VM_INIT_WARN_COUNT:-0} - pre_warn ))
 
   record_module_result "$section" "$rc" "$new_warns" "$elapsed"
+  local configuration_result
+  configuration_result=$(reconcile_summary "$section")
+  if [[ "$(jq -r '.configuration_state' <<< "$configuration_result")" == in_sync && "${VM_INIT_MODULE_STATUS[${#VM_INIT_MODULE_STATUS[@]}-1]}" == ok ]]; then
+    if [[ "$(jq -r '.changed' <<< "$configuration_result")" == true ]]; then
+      VM_INIT_MODULE_DETAIL[${#VM_INIT_MODULE_DETAIL[@]}-1]='changed; verified'
+    else
+      VM_INIT_MODULE_DETAIL[${#VM_INIT_MODULE_DETAIL[@]}-1]='unchanged; verified'
+    fi
+  fi
   status="${VM_INIT_MODULE_STATUS[${#VM_INIT_MODULE_STATUS[@]}-1]}"
 
   # Remember the outcome so a later --verify can tell "never provisioned here"
@@ -1400,6 +1380,8 @@ verify_module() {
   fi
 
   source_module "$module_file" "$entry_func"
+  local inspection_rc=0
+  inspect_configuration "$section" || inspection_rc=$?
 
   verify_func="verify_${section}"
   if ! declare -F "$verify_func" >/dev/null 2>&1; then
@@ -1414,6 +1396,8 @@ verify_module() {
   set +e
   run_with_errexit "$verify_func"
   rc=$?
+  if (( inspection_rc != 0 )); then rc=1; fi
+  case "$(reconcile_summary "$section" | jq -r '.configuration_state')" in drifted|pending|unknown) rc=1 ;; esac
   set -e
 
   elapsed=$(( $(date +%s) - start_ts ))
@@ -1434,6 +1418,7 @@ if [[ "$VM_INIT_DRY_RUN" != 1 && "$VM_INIT_VERIFY" != 1 ]]; then
   save_run_context || exit 1
   CONFIG="$VM_INIT_RETRY_CONFIG"
   state_set last.force "$VM_INIT_FORCE"
+  state_set last.restore_config "$VM_INIT_RESTORE_CONFIG"
   state_set last.no_upgrade "$VM_INIT_NO_UPGRADE"
   state_set last.failed ''
 fi

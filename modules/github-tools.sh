@@ -5,22 +5,10 @@
 install_gh() {
   require_commands apt-get dpkg || return 1
 
-  if ! [[ -f /etc/apt/sources.list.d/github-cli.list ]]; then
-    log_step "Setting up GitHub CLI apt repository"
-    if ! download_file \
-          "https://cli.github.com/packages/githubcli-archive-keyring.gpg" \
-          /usr/share/keyrings/githubcli-archive-keyring.gpg; then
-      log_fail "Failed to download GitHub CLI keyring"
-      return 1
-    fi
-    chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] \
-https://cli.github.com/packages stable main" \
-      | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-
-    run_quiet apt_get update -q
-  fi
+  ensure_apt_packages ca-certificates curl gnupg || return 1
+  local rc=0
+  gh_repository apply || rc=$?
+  if [[ "$rc" == 2 ]]; then return 0; elif [[ "$rc" != 0 ]]; then return "$rc"; fi
 
   apt_install_with_report gh
 }
@@ -129,4 +117,18 @@ verify_github_tools() {
   fi
 
   return "$rc"
+}
+
+
+gh_repository() {
+  local root="${VM_INIT_SYSTEM_ROOT:-}"
+  reconcile_repository github_tools "$root/etc/apt/sources.list.d/github-cli.list" "$root/usr/share/keyrings/githubcli-archive-keyring.gpg" \
+    https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" "${1:-inspect}"
+}
+
+inspect_github_tools() {
+  local rc=0
+  if [[ "$(yq_get '.github_tools.gh' true "$CONFIG")" == true ]]; then gh_repository inspect || rc=$?; fi
+  [[ "$rc" == 0 || "$rc" == 2 ]]
 }

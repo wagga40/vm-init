@@ -5,42 +5,44 @@ install_docker() {
   require_commands apt-get dpkg systemctl || return 1
   ensure_apt_packages ca-certificates curl gnupg lsb-release || return 1
 
-  if ! [[ -f /etc/apt/sources.list.d/docker.list && -s /etc/apt/keyrings/docker.gpg ]]; then
-    log_step "Setting up Docker apt repository"
-    mkdir -p /etc/apt/keyrings
-
-    local gpg_tmp
-    gpg_tmp=$(mktemp)
-    if ! download_file "https://download.docker.com/linux/ubuntu/gpg" "$gpg_tmp"; then
-      rm -f "$gpg_tmp"
-      log_fail "Failed to download Docker GPG key"
-      return 1
+  local repository_rc=0
+  docker_repository apply || repository_rc=$?
+  if [[ "$repository_rc" == 2 ]]; then
+    if ! is_installed docker; then
+      log_warn 'Docker installation needs the repository drift resolved first'
+      return 0
     fi
-    run_quiet bash -c "gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg < '$gpg_tmp'"
-    rm -f "$gpg_tmp"
-    chmod 644 /etc/apt/keyrings/docker.gpg
-
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
-      | tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-    run_quiet apt_get update -q
+  elif [[ "$repository_rc" != 0 ]]; then return 1
+  else
+    apt_install_group_with_report "docker" docker-ce \
+      docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || return 1
   fi
 
-  apt_install_group_with_report "docker" docker-ce \
-    docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || return 1
-
-  local user
+  local user key actual legacy=0
+  if reconcile_legacy docker; then legacy=1; fi
   for user in ${VM_INIT_TARGET_USERS:-}; do
     [[ "$user" != root ]] || continue
-    if ! id -nG "$user" | tr ' ' '\n' | grep -qx docker; then
+    key="docker.group.$(getent passwd "$user" | awk -F: '{print $1 ":" $3 ":" $6}' | _sha256_stdin)"
+    actual=absent
+    if id -nG "$user" | tr ' ' '\n' | grep -qx docker; then actual=present; fi
+    # Account-specific baselines distinguish newly selected accounts from
+    # administrator removals on accounts we previously configured.
+    local account_legacy=0
+    if reconcile_account_legacy docker "$user"; then account_legacy=1; fi
+    reconcile_decide "$key" present "$actual" "$account_legacy" || return 1
+    if [[ "$RECONCILE_ACTION" == drift ]]; then continue; fi
+    if [[ "$RECONCILE_ACTION" == apply ]]; then
+      reconcile_begin "$key" present "$actual" || return 1
       usermod -aG docker "$user" || return 1
+      id -nG "$user" | tr ' ' '\n' | grep -qx docker || return 1
+      reconcile_accept "$key" present present true || return 1
       vm_init_note "Log out and back in for ${user}'s docker group membership to apply." session
-    fi
+    else reconcile_accept "$key" present present || return 1; fi
   done
-
-  run_quiet systemctl enable docker
-  run_quiet systemctl start docker
+  local service_rc=0
+  reconcile_service docker docker "$legacy" || service_rc=$?
+  if [[ "$service_rc" == 2 ]]; then return 0; fi
+  return "$service_rc"
 }
 
 # Post-install verification: the daemon is up, reachable, and the compose plugin
@@ -84,4 +86,29 @@ verify_docker() {
     fi
   done
   return "$rc"
+}
+
+
+docker_repository() {
+  local root="${VM_INIT_SYSTEM_ROOT:-}"
+  reconcile_repository docker "$root/etc/apt/sources.list.d/docker.list" "$root/etc/apt/keyrings/docker.gpg" \
+    https://download.docker.com/linux/ubuntu/gpg \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" "${1:-inspect}"
+}
+
+inspect_docker() {
+  local rc=0 user key actual
+  docker_repository inspect || rc=$?
+  [[ "$rc" == 0 || "$rc" == 2 ]] || return "$rc"
+  inspect_service docker docker || return 1
+  for user in ${VM_INIT_TARGET_USERS:-}; do
+    [[ "$user" != root ]] || continue
+    key="docker.group.$(getent passwd "$user" | awk -F: '{print $1 ":" $3 ":" $6}' | _sha256_stdin)"
+    actual=absent
+    if id -nG "$user" | tr ' ' '\n' | grep -qx docker; then actual=present; fi
+    local account_legacy=0
+    if reconcile_account_legacy docker "$user"; then account_legacy=1; fi
+    reconcile_decide "$key" present "$actual" "$account_legacy" || return 1
+  done
+  return 0
 }

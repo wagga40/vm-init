@@ -22,6 +22,9 @@ detect_ssh_connection() {
 }
 
 ufw_effective_rules() {
+  if [[ "${VM_INIT_UFW_BASELINE:-0}" == 1 ]]; then
+    yq -r '.ufw.allow // [] | .[]' "$CONFIG"; return
+  fi
   detect_ssh_connection
   yq -r '.ufw.allow // [] | .[]' "$CONFIG"
   local port="${SSH_CONNECTION:-}"
@@ -31,7 +34,61 @@ ufw_effective_rules() {
   fi
 }
 
+ufw_desired_config() {
+  local rules
+  rules=$(ufw_effective_rules | sort -u | jq -Rn '[inputs | select(length>0)]') || return 1
+  jq -cnS --arg incoming "$(yq_get '.ufw.defaults.incoming' deny "$CONFIG")" \
+    --arg outgoing "$(yq_get '.ufw.defaults.outgoing' allow "$CONFIG")" \
+    --argjson ipv6 "$(yq_get '.ufw.ipv6' true "$CONFIG")" --argjson rules "$rules" \
+    '{ufw:{enabled:true,defaults:{incoming:$incoming,outgoing:$outgoing},ipv6:$ipv6,allow:$rules}}'
+}
+
+ufw_config_matches() {
+  local candidate rc=0
+  candidate=$(mktemp) || return 1
+  printf '%s\n' "$1" > "$candidate"
+  CONFIG="$candidate" VM_INIT_NOTES_FILE='' VM_INIT_UFW_BASELINE=1 verify_ufw applying >/dev/null 2>&1 || rc=$?
+  rm -f "$candidate"
+  return "$rc"
+}
+
+inspect_ufw() {
+  local saved old legacy=0
+  UFW_DESIRED=$(ufw_desired_config) || return 1
+  saved=$(reconcile_load ufw.configuration) || { log_fail 'Cannot read firewall baseline'; return 1; }
+  if ! is_installed ufw; then UFW_OBSERVED=absent
+  elif ufw_config_matches "$UFW_DESIRED"; then UFW_OBSERVED="$UFW_DESIRED"
+  elif [[ "$saved" != null ]] && old=$(jq -r '.desired' <<< "$saved") && ufw_config_matches "$old"; then
+    UFW_OBSERVED=$(jq -r '.observed' <<< "$saved")
+  else
+    UFW_OBSERVED=$(LC_ALL=C ufw status verbose) || return 1
+    UFW_OBSERVED+=$'\n'"IPV6=$(sed -n 's/^IPV6=//p' "${VM_INIT_UFW_ROOT:-}/etc/default/ufw")"
+  fi
+  if reconcile_legacy ufw || [[ -n "$(LC_ALL=C ufw show added 2>/dev/null | grep 'vm-init' || true)" ]]; then legacy=1; fi
+  reconcile_decide ufw.configuration "$UFW_DESIRED" "$UFW_OBSERVED" "$legacy"
+}
+
+ufw_canonical_rule() {
+  local rule="${1%% (*}" ports
+  if [[ "$rule" =~ ^[0-9,:]+(/(tcp|udp))?$ ]]; then printf '%s\n' "$rule"; return 0; fi
+  ports=$(LC_ALL=C ufw app info "$rule" 2>/dev/null | awk '
+    /^Ports?:/ { collecting=1; next }
+    collecting { sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); if(length) print }
+  ') || ports=''
+  if [[ -n "$ports" ]]; then printf '%s\n' "$ports" | tr '|' '\n'
+  else printf '%s\n' "$rule"; fi
+}
+
 ufw_rule_present() {
+  local rule="$1" status="$2" family="${3:-4}" canonical
+  while read -r canonical; do
+    [[ -n "$canonical" ]] || continue
+    ufw_rule_present_literal "$canonical" "$status" "$family" || return 1
+  done < <(ufw_canonical_rule "$rule")
+  return 0
+}
+
+ufw_rule_present_literal() {
   local rule="$1" status="$2" family="${3:-4}"
   awk -v wanted="$rule" -v family="$family" '
     {
@@ -78,16 +135,25 @@ sys.exit(1)
 
 # Numbered output preserves rule order; deletion must run in descending order.
 ufw_stale_rule_numbers() {
-  local desired="$1" status="$2"
-  awk -v desired="$desired" '
-    BEGIN { n=split(desired, rules, "\n"); for(i=1;i<=n;i++) keep[rules[i]]=1 }
+  local desired="$1" status="$2" canonical_desired='' rule canonical number stale
+  while IFS= read -r rule; do
+    [[ -n "$rule" ]] || continue
+    canonical_desired+="$(ufw_canonical_rule "$rule")"$'\n'
+  done <<< "$desired"
+  while IFS=$'\t' read -r number rule; do
+    stale=0
+    while read -r canonical; do
+      if ! grep -qxF "$canonical" <<< "$canonical_desired"; then stale=1; fi
+    done < <(ufw_canonical_rule "$rule")
+    if [[ "$stale" == 1 ]]; then printf '%s\n' "$number"; fi
+  done < <(awk '
     /^[[] *[0-9]+[]]/ && /# vm-init$/ {
       number=$0; sub(/^[[] */, "", number); sub(/[]].*/, "", number)
       row=$0; sub(/^[[] *[0-9]+[]] */, "", row)
       split(row, col, /[ \t][ \t]+/); sub(/ \(v6\)$/, "", col[1])
-      if(!keep[col[1]]) print number
+      print number "\t" col[1]
     }
-  ' <<< "$status" | sort -rn
+  ' <<< "$status") | sort -rn
 }
 
 ufw_rollback() {
@@ -154,6 +220,10 @@ confirm_firewall() (
     log_fail 'The rollback already started; check firewall status before applying again'
     return 1
   fi
+  if [[ -f "$snapshot/baseline.json" ]]; then
+    reconcile_save "$(reconcile_path ufw.configuration)" "$(cat "$snapshot/baseline.json")" || return 1
+    rm -f "$(reconcile_path ufw.configuration).pending"
+  fi
   rm -f "$pending"
   printf '%s confirmed\n' "${run_id:-unknown}" > "$VM_INIT_STATE_DIR/firewall-result"
   rm -rf "$snapshot"
@@ -173,6 +243,14 @@ install_ufw() (
     run_quiet apt_get update -q
     run_quiet apt_get install -y -q ufw
   fi
+  inspect_ufw || return 1
+  if [[ "$RECONCILE_ACTION" == drift ]]; then return 0; fi
+  if [[ "$RECONCILE_ACTION" == unchanged ]]; then
+    reconcile_accept ufw.configuration "$UFW_DESIRED" "$UFW_OBSERVED" || return 1
+    log_ok 'Firewall unchanged; requested policies and rules already match'
+    return 0
+  fi
+  reconcile_begin ufw.configuration "$UFW_DESIRED" "$UFW_OBSERVED" || return 1
   local root="${VM_INIT_UFW_ROOT:-}" desired status added numbered rule number incoming outgoing ipv6
   snapshot="" committed=0 restored=1
   desired=$(ufw_effective_rules | sort -u)
@@ -208,11 +286,15 @@ install_ufw() (
   sed -i "s/^IPV6=.*/IPV6=${ipv6}/" "$root/etc/default/ufw"
   # Add rules before tightening policies, and never take ownership of a rule
   # that another administrator already created.
-  status=$(LC_ALL=C ufw status)
+  status=$(LC_ALL=C ufw status verbose)
   added=$(LC_ALL=C ufw show added)
+  local have_stale=0
+  if [[ -n "$(ufw_stale_rule_numbers "$desired" "$(LC_ALL=C ufw status numbered)")" ]]; then have_stale=1; fi
   while IFS= read -r rule; do
     [[ -n "$rule" ]] || continue
-    if ! ufw_rule_exists "$rule" "$added"; then
+    if [[ "$have_stale" == 0 ]] && ufw_rule_present "$rule" "$status" 4 && { [[ "$ipv6" == no ]] || ufw_rule_present "$rule" "$status" 6; }; then
+      continue
+    elif ! ufw_rule_exists "$rule" "$added"; then
       run_quiet ufw allow "$rule" comment vm-init
     elif [[ "$ipv6" == yes ]] && ! ufw_rule_present "$rule" "$status" 6; then
       run_quiet ufw allow "$rule"
@@ -228,6 +310,13 @@ install_ufw() (
   run_quiet ufw --force enable
   run_quiet ufw reload
   verify_ufw applying
+  if [[ -n "${SSH_CONNECTION:-}" ]]; then
+    jq -cn --arg desired "$UFW_DESIRED" --arg run "${VM_INIT_RUN_ID:-unknown}" \
+      '{schema_version:1,desired:$desired,observed:$desired,run_id:$run}' > "$snapshot/baseline.json"
+    reconcile_report ufw.configuration pending "$UFW_DESIRED" "$UFW_DESIRED" 'awaiting SSH confirmation' true
+  else
+    reconcile_accept ufw.configuration "$UFW_DESIRED" "$UFW_DESIRED" true
+  fi
   touch "$snapshot/ready"
   committed=1
   if [[ -n "${SSH_CONNECTION:-}" ]]; then

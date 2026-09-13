@@ -311,6 +311,7 @@ EOF
   source "${VM_INIT_REPO_ROOT}/modules/dns.sh"
   require_commands() { return 0; }
   install_dnsproxy_binary() { return 1; }
+  dns_prepare() { DNS_STAGE=$(mktemp -d); DNS_DESIRED=desired; DNS_OBSERVED=absent; RECONCILE_ACTION=apply; }
   export VM_INIT_STATE_DIR="$TEST_TMPDIR/state"
   dns_save_state() { return 0; }
   dns_restore_state() { return 0; }
@@ -410,7 +411,13 @@ mock_shell_install() {
   fish() { return 0; }
   install() { return 0; }
   chown() { return 0; }
-  chsh() { return 0; }
+  getent() {
+    local account="$2" login=/bin/bash
+    if [[ -f "$TEST_TMPDIR/$account.shell" ]]; then login=$(cat "$TEST_TMPDIR/$account.shell"); fi
+    printf '%s:x:1000:1000::%s/%s:%s\n' "$account" "$TEST_TMPDIR" "$account" "$login"
+  }
+  write_shell_file() { mkdir -p "$(dirname "$2")"; cat > "$2"; }
+  chsh() { printf '%s\n' "$2" > "$TEST_TMPDIR/$3.shell"; }
   id() { echo staff; }
   run_quiet() { return 0; }
 }
@@ -442,7 +449,7 @@ mock_shell_install() {
 @test "install_shell: fails when changing a human user's shell fails" {
   source "$VM_INIT_REPO_ROOT/modules/shell.sh"
   mock_shell_install
-  chsh() { [[ "$3" != alice ]]; }
+  chsh() { [[ "$3" != alice ]] || return 1; printf '%s\n' "$2" > "$TEST_TMPDIR/$3.shell"; }
   fisher_present_for() { return 0; }
   run install_shell
   [ "$status" -ne 0 ]

@@ -172,6 +172,8 @@ resolve_target_users() {
 # Persist the exact config and choices used for a mutation, never shell code.
 save_run_context() {
   local run_dir="$VM_INIT_STATE_DIR/runs/$VM_INIT_RUN_ID" users
+  VM_INIT_PREVIOUS_CONFIG=$(state_get last.config 2>/dev/null || true)
+  export VM_INIT_PREVIOUS_CONFIG
   mkdir -p "$run_dir" || return 1
   chmod 700 "$VM_INIT_STATE_DIR/runs" "$run_dir"
   users=$(printf '%s\n' "${VM_INIT_TARGET_USERS:-}" | jq -R 'split(" ") | map(select(length > 0))')

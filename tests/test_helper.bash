@@ -23,6 +23,7 @@ load_common() {
   source "$VM_INIT_COMMON_SH"
   source "$VM_INIT_REPO_ROOT/modules/_config.sh"
   source "$VM_INIT_REPO_ROOT/modules/_safety.sh"
+  source "$VM_INIT_REPO_ROOT/modules/_reconcile.sh"
   source "$VM_INIT_REPO_ROOT/modules/_recovery.sh"
 }
 
@@ -30,6 +31,9 @@ load_common() {
 make_test_tmpdir() {
   TEST_TMPDIR=$(mktemp -d)
   export TEST_TMPDIR
+  export VM_INIT_STATE_DIR="$TEST_TMPDIR/state"
+  export VM_INIT_STATE_FILE="$VM_INIT_STATE_DIR/state"
+  export VM_INIT_RECONCILE_REPORT="$TEST_TMPDIR/configuration.jsonl"
 }
 
 cleanup_test_tmpdir() {
@@ -47,6 +51,7 @@ run_module_with_stubs() {
     set -uo pipefail
     source "$VM_INIT_COMMON_SH"
     source "$VM_INIT_REPO_ROOT/modules/_safety.sh"
+    source "$VM_INIT_REPO_ROOT/modules/_reconcile.sh"
     source "$VM_INIT_REPO_ROOT/modules/_recovery.sh"
     source "$VM_INIT_REPO_ROOT/modules/$1.sh"
     source "$2"

@@ -9,6 +9,14 @@
 
 VM_INIT_GRUB_DEFAULTS="${VM_INIT_GRUB_DEFAULTS:-/etc/default/grub}"
 
+inspect_kernel() {
+  local legacy=0
+  KERNEL_DESIRED=$(yq_get '.kernel.mitigations_off' false "$CONFIG")
+  if _kernel_cmdline_has mitigations=off; then KERNEL_OBSERVED=true; else KERNEL_OBSERVED=false; fi
+  if reconcile_legacy kernel || [[ -f "${VM_INIT_GRUB_DEFAULTS}.vm-init.bak" ]]; then legacy=1; fi
+  reconcile_decide kernel.mitigations_off "$KERNEL_DESIRED" "$KERNEL_OBSERVED" "$legacy"
+}
+
 install_kernel() {
   require_commands awk grep sed || return 1
 
@@ -18,6 +26,18 @@ install_kernel() {
   fi
 
   local changed=0
+  inspect_kernel || return 1
+  [[ "$RECONCILE_ACTION" != drift ]] || return 0
+  if [[ "$RECONCILE_ACTION" == unchanged ]]; then
+    if [[ -f "$(reconcile_path kernel.mitigations_off).pending" ]]; then
+      require_commands update-grub || return 1
+      run_quiet update-grub || return 1
+    fi
+    reconcile_accept kernel.mitigations_off "$KERNEL_DESIRED" "$KERNEL_OBSERVED" || return 1
+    verify_kernel
+    return
+  fi
+  reconcile_begin kernel.mitigations_off "$KERNEL_DESIRED" "$KERNEL_OBSERVED" || return 1
 
   local mitigations_off
   mitigations_off=$(yq_get '.kernel.mitigations_off' false "$CONFIG")
@@ -44,13 +64,14 @@ install_kernel() {
   if (( changed )); then
     if ! command -v update-grub >/dev/null 2>&1; then
       log_warn "update-grub not found — bootloader config not regenerated"
-      return 0
+      return 1
     fi
     log_step "Running update-grub"
     run_quiet update-grub
     log_ok "update-grub complete (reboot to apply)"
     vm_init_note "Reboot when convenient to apply the changed kernel boot parameters." action 'reboot required'
   fi
+  reconcile_accept kernel.mitigations_off "$KERNEL_DESIRED" "$KERNEL_DESIRED" true
 }
 
 # Keep one timestamped backup the first time we touch grub. Subsequent edits

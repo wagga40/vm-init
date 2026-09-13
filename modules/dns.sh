@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # DNS privacy client module using dnsproxy (DoH/DoT).
 # Reads: CONFIG (path to vm-init.yml)
+# shellcheck disable=SC2030,SC2031 # inspectors and installers each prepare their own stage
 
 install_dnsproxy_binary() {
   local sys_arch arch_pattern
@@ -93,6 +94,9 @@ ensure_systemd_resolved() {
   fi
 
   if ! systemctl is-enabled --quiet systemd-resolved 2>/dev/null; then
+    if systemctl is-enabled systemd-resolved 2>/dev/null | grep -qx masked; then
+      systemctl unmask systemd-resolved || return 1
+    fi
     systemctl enable systemd-resolved >/dev/null 2>&1 || true
   fi
   if ! systemctl is-active --quiet systemd-resolved 2>/dev/null; then
@@ -106,7 +110,7 @@ ensure_systemd_resolved() {
 }
 
 install_dns_pin_helper() {
-  cat > "${VM_INIT_DNS_ROOT:-}/usr/local/sbin/vm-init-dns-pin" <<'PIN_EOF'
+  cat > "${VM_INIT_DNS_ROOT:-}/usr/local/sbin/vm-init-dns-pin" <<'PIN_EOF' || return 1
 #!/bin/sh
 # vm-init-dns-pin -- Pin default-route links to the local dnsproxy.
 # Installed by modules/dns.sh and run once on every boot via
@@ -128,7 +132,7 @@ for iface in $links; do
   resolvectl domain "$iface" '~.' >/dev/null 2>&1 || true
 done
 PIN_EOF
-  chmod 0755 "${VM_INIT_DNS_ROOT:-}/usr/local/sbin/vm-init-dns-pin"
+  chmod 0755 "${VM_INIT_DNS_ROOT:-}/usr/local/sbin/vm-init-dns-pin" || return 1
 }
 
 dnsproxy_listening_on() {
@@ -174,7 +178,8 @@ verify_doh_resolves() {
   return 1
 }
 
-_configure_dns() {
+render_dns_config() {
+  mkdir -p "${VM_INIT_DNS_ROOT:-}/etc/systemd/system" "${VM_INIT_DNS_ROOT:-}/usr/local/sbin" || return 1
   local upstream listen_address listen_port
   if ! upstream=$(dns_upstream_from_config); then
     log_warn "DNS module skipped — invalid dns.server in config"
@@ -217,7 +222,7 @@ _configure_dns() {
   #                                      reached very late at boot which is
   #                                      what made resolved fall back to a
   #                                      dead :5353 the first time around.
-  cat > "${VM_INIT_DNS_ROOT:-}/etc/systemd/system/dnsproxy.service" <<EOF
+  cat > "${VM_INIT_DNS_ROOT:-}/etc/systemd/system/dnsproxy.service" <<EOF || return 1
 [Unit]
 Description=DNS over HTTPS/TLS proxy (dnsproxy)
 Documentation=https://github.com/AdguardTeam/dnsproxy
@@ -236,10 +241,10 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 
-  rm -f "${VM_INIT_DNS_ROOT:-}/etc/systemd/resolved.conf.d/00-recovery-dns.conf"
+  rm -f "${VM_INIT_DNS_ROOT:-}/etc/systemd/resolved.conf.d/00-recovery-dns.conf" || return 1
   log_step "Pointing systemd-resolved to dnsproxy"
-  mkdir -p "${VM_INIT_DNS_ROOT:-}/etc/systemd/resolved.conf.d"
-  cat > "${VM_INIT_DNS_ROOT:-}/etc/systemd/resolved.conf.d/99-vm-init-dnsproxy.conf" <<EOF
+  mkdir -p "${VM_INIT_DNS_ROOT:-}/etc/systemd/resolved.conf.d" || return 1
+  cat > "${VM_INIT_DNS_ROOT:-}/etc/systemd/resolved.conf.d/99-vm-init-dnsproxy.conf" <<EOF || return 1
 [Resolve]
 DNS=
 DNS=${resolved_dns_target}
@@ -253,16 +258,16 @@ EOF
   # systemd-resolved is activated very early, in a different transaction, so
   # there is no shared activation for the ordering to apply to. Pulling
   # dnsproxy in via Wants= here puts both units in the same transaction.
-  mkdir -p "${VM_INIT_DNS_ROOT:-}/etc/systemd/system/systemd-resolved.service.d"
-  cat > "${VM_INIT_DNS_ROOT:-}/etc/systemd/system/systemd-resolved.service.d/10-vm-init-dnsproxy.conf" <<EOF
+  mkdir -p "${VM_INIT_DNS_ROOT:-}/etc/systemd/system/systemd-resolved.service.d" || return 1
+  cat > "${VM_INIT_DNS_ROOT:-}/etc/systemd/system/systemd-resolved.service.d/10-vm-init-dnsproxy.conf" <<EOF || return 1
 [Unit]
 Wants=dnsproxy.service
 After=dnsproxy.service
 EOF
 
   log_step "Installing per-link DNS pin helper"
-  install_dns_pin_helper
-  cat > "${VM_INIT_DNS_ROOT:-}/etc/systemd/system/vm-init-dns-pin.service" <<EOF
+  install_dns_pin_helper || return 1
+  cat > "${VM_INIT_DNS_ROOT:-}/etc/systemd/system/vm-init-dns-pin.service" <<EOF || return 1
 [Unit]
 Description=Pin per-link DNS to local dnsproxy (vm-init)
 Documentation=https://github.com/wagga40/vm-init
@@ -279,17 +284,60 @@ WantedBy=multi-user.target
 EOF
 
   log_step "Ensuring resolv.conf uses the stub resolver"
-  ln -sfn /run/systemd/resolve/stub-resolv.conf "${VM_INIT_DNS_ROOT:-}/etc/resolv.conf"
+  ln -sfn /run/systemd/resolve/stub-resolv.conf "${VM_INIT_DNS_ROOT:-}/etc/resolv.conf" || return 1
 
-  if ! systemctl daemon-reload >/dev/null 2>&1; then
+  return 0
+}
+
+_configure_dns() {
+  local suffix source destination changed_units=0 changed_proxy=0 changed_resolved=0 changed_pin=0
+  local listen_address listen_port resolved_dns_target
+  if should_force; then changed_proxy=1; fi
+  if [[ "$(jq -r '.effective' <<< "$DNS_OBSERVED")" == false ]]; then
+    # The managed files can already match while systemd still has an older
+    # unit loaded or resolved has different runtime routing. This path is only
+    # reached after reconciliation has authorized the configuration change.
+    changed_units=1; changed_proxy=1; changed_resolved=1; changed_pin=1
+  fi
+  listen_address=$(yq_get '.dns.listen_address' 127.0.0.1 "$CONFIG")
+  listen_port=$(yq_get '.dns.listen_port' 5353 "$CONFIG")
+  resolved_dns_target=$(dns_target "$listen_address" "$listen_port")
+  while read -r suffix; do
+    source="$DNS_STAGE$suffix"
+    destination="${VM_INIT_DNS_ROOT:-}$suffix"
+    if [[ "$(reconcile_file_value "$source")" == "$(reconcile_file_value "$destination")" ]]; then continue; fi
+    case "$suffix" in
+      */dnsproxy.service) changed_units=1; changed_proxy=1 ;;
+      */vm-init-dns-pin.service|*/vm-init-dns-pin) changed_units=1; changed_pin=1 ;;
+      */systemd-resolved.service.d/*) changed_units=1; changed_resolved=1 ;;
+      *) changed_resolved=1 ;;
+    esac
+    mkdir -p "$(dirname "$destination")"
+    if [[ -L "$source" ]]; then ln -sfn "$(readlink "$source")" "$destination"
+    else
+      local temp
+      temp=$(mktemp "$(dirname "$destination")/.vm-init.XXXXXX") || return 1
+      cat "$source" > "$temp"
+      if [[ "$suffix" == /usr/local/sbin/* ]]; then chmod 0755 "$temp"; else chmod 0644 "$temp"; fi
+      mv -f "$temp" "$destination"
+    fi
+  done < <(dns_config_paths)
+  if [[ -e "${VM_INIT_DNS_ROOT:-}/etc/systemd/resolved.conf.d/00-recovery-dns.conf" ]]; then
+    rm -f "${VM_INIT_DNS_ROOT:-}/etc/systemd/resolved.conf.d/00-recovery-dns.conf"
+    changed_resolved=1
+  fi
+  if (( changed_units )) && ! systemctl daemon-reload >/dev/null 2>&1; then
     log_warn "systemd daemon-reload failed after writing DNS units"
     return 1
   fi
-  if ! systemctl enable dnsproxy vm-init-dns-pin >/dev/null 2>&1; then
-    log_warn "Failed to enable dnsproxy/vm-init-dns-pin at boot"
-    return 1
-  fi
-  if ! systemctl restart dnsproxy >/dev/null 2>&1; then
+  local service
+  for service in dnsproxy vm-init-dns-pin; do
+    if ! systemctl is-enabled --quiet "$service"; then
+      if systemctl is-enabled "$service" 2>/dev/null | grep -qx masked; then systemctl unmask "$service" || return 1; fi
+      systemctl enable "$service" || return 1
+    fi
+  done
+  if { (( changed_proxy )) || ! systemctl is-active --quiet dnsproxy; } && ! systemctl restart dnsproxy >/dev/null 2>&1; then
     log_warn "dnsproxy failed to start"
     log_info "Debug: journalctl -u dnsproxy -n 30 --no-pager"
     return 1
@@ -304,14 +352,15 @@ EOF
     return 1
   fi
 
-  if ! systemctl restart systemd-resolved >/dev/null 2>&1; then
+  if (( changed_resolved )) && ! systemctl restart systemd-resolved >/dev/null 2>&1; then
     log_warn "systemd-resolved failed to restart"
     log_info "Debug: systemctl status systemd-resolved --no-pager"
     return 1
   fi
   # Apply the boot-time pinning right now too (and surface failures via the
   # oneshot's exit status); fall back to invoking the helper directly.
-  if ! systemctl restart vm-init-dns-pin >/dev/null 2>&1 \
+  if { (( changed_pin || changed_resolved || changed_proxy )) || [[ "$DNS_OBSERVED" != "$DNS_DESIRED" ]]; } \
+      && ! systemctl restart vm-init-dns-pin >/dev/null 2>&1 \
       && ! /usr/local/sbin/vm-init-dns-pin "$resolved_dns_target" >/dev/null 2>&1; then
     log_warn "Failed to apply per-link DNS pinning"
     log_info "Debug: systemctl status vm-init-dns-pin --no-pager"
@@ -361,6 +410,7 @@ verify_dns() {
   fi
 
   if ! dns_verify_routing "$listen_address" "$listen_port" "$upstream"; then rc=1; fi
+  if ! getent hosts example.com >/dev/null 2>&1; then log_fail 'System name resolution failed'; rc=1; fi
   if verify_doh_resolves "$listen_address" "$listen_port"; then
     log_ok "direct query to the configured DNS proxy succeeds"
   else
@@ -411,20 +461,104 @@ dns_verify_routing() {
       log_fail "DNS routing on ${iface} is not pinned to the local proxy"; rc=1
     fi
   done < <({ ip -4 route show default; ip -6 route show default; } | awk '/^default / { for(i=1;i<NF;i++) if($i == "dev") print $(i+1) }' | sort -u)
-  if getent hosts example.com >/dev/null 2>&1; then log_ok 'System name resolution works'
-  else log_fail 'System name resolution failed'; rc=1; fi
   return "$rc"
 }
 
+dns_config_paths() {
+  printf '%s\n' /etc/resolv.conf /etc/systemd/system/dnsproxy.service \
+    /etc/systemd/system/vm-init-dns-pin.service \
+    /etc/systemd/system/systemd-resolved.service.d/10-vm-init-dnsproxy.conf \
+    /etc/systemd/resolved.conf.d/99-vm-init-dnsproxy.conf /usr/local/sbin/vm-init-dns-pin
+}
+
+dns_file_manifest() {
+  local root="$1" result='{}' suffix value
+  while read -r suffix; do
+    value=$(reconcile_file_value "$root$suffix") || return 1
+    result=$(jq -cS --arg path "$suffix" --arg value "$value" '. + {($path):$value}' <<< "$result") || return 1
+  done < <(dns_config_paths)
+  value=$(reconcile_file_value "$root/etc/systemd/resolved.conf.d/00-recovery-dns.conf") || return 1
+  jq -cS --arg value "$value" '. + {recovery:$value}' <<< "$result"
+}
+
+dns_observe_spec() {
+  local spec="$1" files services='{}' service value effective=true
+  files=$(dns_file_manifest "${VM_INIT_DNS_ROOT:-}") || return 1
+  for service in dnsproxy systemd-resolved vm-init-dns-pin; do
+    value=$(systemctl is-enabled "$service" 2>/dev/null) || { [[ -n "$value" ]] || value=absent; }
+    services=$(jq -cS --arg service "$service" --arg value "$value" '. + {($service):$value}' <<< "$services") || return 1
+  done
+  # A stopped enabled service can be started without rewriting its files.
+  # Effective routing is checked when both providers are running, then checked
+  # again after activation. Network reachability is a health check, not drift.
+  if systemctl is-active --quiet dnsproxy && systemctl is-active --quiet systemd-resolved; then
+    if ! dns_verify_routing "$(jq -r '.listen' <<< "$spec")" "$(jq -r '.port' <<< "$spec")" "$(jq -r '.upstream' <<< "$spec")" >/dev/null 2>&1; then effective=false; fi
+    local unit bootstrap
+    unit=$(systemctl show dnsproxy --property=ExecStart --value) || return 1
+    while read -r bootstrap; do
+      [[ "$unit" == *"--bootstrap $bootstrap "* ]] || effective=false
+    done < <(jq -r '.bootstrap[]' <<< "$spec")
+  fi
+  jq -cS --argjson files "$files" --argjson services "$services" --argjson effective "$effective" \
+    '.files=$files | .services=$services | .effective=$effective' <<< "$spec"
+}
+
+dns_prepare() {
+  local saved old old_observed legacy=0 files bootstrap
+  DNS_STAGE=$(mktemp -d) || return 1
+  if ! (VM_INIT_DNS_ROOT="$DNS_STAGE" render_dns_config >/dev/null); then rm -rf "$DNS_STAGE"; return 1; fi
+  files=$(dns_file_manifest "$DNS_STAGE") || { rm -rf "$DNS_STAGE"; return 1; }
+  bootstrap=$(yq -r '.dns.bootstrap // ["9.9.9.9", "149.112.112.112"] | @json' "$CONFIG") || return 1
+  DNS_DESIRED=$(jq -cnS --argjson files "$files" --arg upstream "$(dns_upstream_from_config)" \
+    --arg listen "$(yq_get '.dns.listen_address' 127.0.0.1 "$CONFIG")" --arg port "$(yq_get '.dns.listen_port' 5353 "$CONFIG")" \
+    --argjson bootstrap "$bootstrap" '{files:$files,upstream:$upstream,listen:$listen,port:$port,bootstrap:$bootstrap,
+      services:{dnsproxy:"enabled","systemd-resolved":"enabled","vm-init-dns-pin":"enabled"},effective:true}') || return 1
+  DNS_OBSERVED=$(dns_observe_spec "$DNS_DESIRED") || return 1
+  saved=$(reconcile_load dns.configuration) || return 1
+  if [[ "$saved" != null && "$DNS_OBSERVED" != "$DNS_DESIRED" ]]; then
+    old=$(jq -r '.desired' <<< "$saved")
+    old_observed=$(dns_observe_spec "$old") || return 1
+    if [[ "$old_observed" == "$(jq -r '.observed' <<< "$saved")" ]]; then DNS_OBSERVED="$old_observed"; fi
+  fi
+  if reconcile_legacy dns || [[ -f "${VM_INIT_DNS_ROOT:-}/etc/systemd/system/dnsproxy.service" ]]; then legacy=1; fi
+  reconcile_decide dns.configuration "$DNS_DESIRED" "$DNS_OBSERVED" "$legacy"
+}
+
+inspect_dns() (
+  DNS_STAGE=''
+  trap '[[ -z "$DNS_STAGE" ]] || rm -rf "$DNS_STAGE"' EXIT
+  dns_prepare
+)
+
 install_dns() (
   set -e
+  DNS_STAGE=''
+  trap '[[ -z "$DNS_STAGE" ]] || rm -rf "$DNS_STAGE"' EXIT
   require_commands dpkg jq systemctl getent ss || return 1
+  dns_prepare || return 1
+  if [[ "$RECONCILE_ACTION" == drift ]]; then rm -rf "$DNS_STAGE"; return 0; fi
+  if [[ "$RECONCILE_ACTION" == unchanged ]] && ! should_force; then
+    local service
+    for service in dnsproxy systemd-resolved vm-init-dns-pin; do
+      if ! systemctl is-active --quiet "$service"; then
+        run_quiet systemctl start "$service" || { rm -rf "$DNS_STAGE"; return 1; }
+        reconcile_report "dns.runtime.$service" in_sync active active 'service started' true
+      fi
+    done
+    if ! verify_dns; then rm -rf "$DNS_STAGE"; return 1; fi
+    reconcile_accept dns.configuration "$DNS_DESIRED" "$DNS_OBSERVED" || { rm -rf "$DNS_STAGE"; return 1; }
+    rm -rf "$DNS_STAGE"
+    log_ok 'DNS configuration unchanged'
+    return 0
+  fi
+  reconcile_begin dns.configuration "$DNS_DESIRED" "$DNS_OBSERVED" || { rm -rf "$DNS_STAGE"; return 1; }
   mkdir -p "$VM_INIT_STATE_DIR"
   snapshot="" committed=0
   snapshot=$(mktemp -d "$VM_INIT_STATE_DIR/dns-transaction.XXXXXX")
   dns_save_state "$snapshot" || { rm -rf "$snapshot"; return 1; }
   trap '
     rc=$?
+    rm -rf "$DNS_STAGE"
     if [[ "$committed" != 1 ]]; then
       log_warn "DNS setup failed; restoring the previous configuration"
       if ! dns_restore_state "$snapshot"; then
@@ -448,6 +582,8 @@ install_dns() (
   if [[ ! -d "$VM_INIT_STATE_DIR/dns-original" ]]; then
     cp -a "$snapshot" "$VM_INIT_STATE_DIR/dns-original"
   fi
+  verify_dns
+  reconcile_accept dns.configuration "$DNS_DESIRED" "$DNS_DESIRED" true
   committed=1
   log_ok "DNS routing verified through $(dns_upstream_from_config)"
   vm_init_note "DNS now goes through dnsproxy. If it breaks: sudo vm-init repair dns --with-fallback"

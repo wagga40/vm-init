@@ -995,3 +995,10 @@ download_github_release() {
     log_installed "$binary" "$tag"
   fi
 }
+
+# Standalone module consumers and unit harnesses use the same reconciliation
+# helpers as the orchestrator. Bundles inline these immediately after common.
+if [[ "${VM_INIT_BUNDLED:-0}" != 1 ]] && ! declare -F reconcile_decide >/dev/null; then
+  # shellcheck source=modules/_reconcile.sh
+  source "${BASH_SOURCE[0]%/*}/_reconcile.sh"
+fi

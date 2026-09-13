@@ -10,6 +10,7 @@ retry_command() {
   if [[ -n "${VM_INIT_TARGET_USERS:-}" ]]; then args+=(--user "${VM_INIT_TARGET_USERS// /,}"); fi
   if [[ "$mode" != status ]]; then
     [[ "$VM_INIT_FORCE" != 1 ]] || args+=(--force)
+    [[ "${VM_INIT_RESTORE_CONFIG:-0}" != 1 ]] || args+=(--restore-config)
     [[ "$VM_INIT_NO_UPGRADE" != 1 ]] || args+=(--no-upgrade)
     args+=(--verbose)
   fi
@@ -26,6 +27,7 @@ load_failed_run() {
   export VM_INIT_CONFIG_ORIGIN='saved run configuration'
   export VM_INIT_ONLY="$failed"
   VM_INIT_FORCE=$(state_get last.force 2>/dev/null || echo 0)
+  if [[ "${VM_INIT_RESTORE_CONFIG:-0}" != 1 ]]; then VM_INIT_RESTORE_CONFIG=$(state_get last.restore_config 2>/dev/null || echo 0); fi
   VM_INIT_NO_UPGRADE=$(state_get last.no_upgrade 2>/dev/null || echo 0)
 }
 
@@ -132,9 +134,10 @@ print_json_summary() {
     rows=$(jq --arg name "${VM_INIT_MODULE_NAMES[$i]}" --arg status "$status" \
       --arg detail "${VM_INIT_MODULE_DETAIL[$i]}" --arg elapsed "${VM_INIT_MODULE_ELAPSED[$i]:-0}" \
       --arg last "$(state_get "module.${VM_INIT_MODULE_NAMES[$i]}.status" 2>/dev/null || true)" \
+      --argjson configuration "$(reconcile_summary "${VM_INIT_MODULE_NAMES[$i]}")" \
       '. + [{name:$name,status:$status,detail:$detail,elapsed_seconds:($elapsed|tonumber),last_outcome:$last,
         desired_state:(if $status == "skipped" then "not_managed" else "managed" end),
-        observed_state:({ok:"healthy",warned:"warnings",needs_action:"needs_action",failed:"drifted",skipped:"not_checked",not_run:"not_checked"}[$status])}]' <<< "$rows")
+        observed_state:({ok:"healthy",warned:"warnings",needs_action:"needs_action",failed:"drifted",skipped:"not_checked",not_run:"not_checked"}[$status])} + $configuration]' <<< "$rows")
   done
   messages=$(vm_init_notes | jq -Rn '[inputs | split("\t") | {kind:.[0],module:.[1],summary:.[2],message:.[3]}]')
   jq -n --arg version "$VM_INIT_VERSION" --arg run "$VM_INIT_RUN_ID" \

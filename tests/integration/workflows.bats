@@ -141,3 +141,16 @@ SH
   [ "$(cat "$VM_INIT_DNS_ROOT/etc/resolv.conf")" = 'nameserver 192.0.2.53' ]
   [ ! -f "$TEST_TMPDIR/yq-was-called" ]
 }
+
+@test "restore-config is previewable and rejects unrelated commands before writes" {
+  make_minimal_config "$TEST_TMPDIR/config.yml"
+  run bash "$VM_INIT_SH" plan --config "$TEST_TMPDIR/config.yml" --only shell --restore-config
+  [ "$status" -eq 0 ]
+  [ ! -d "$VM_INIT_STATE_DIR" ]
+  for command in status update prepare confirm-firewall; do
+    run bash "$VM_INIT_SH" "$command" --restore-config
+    [ "$status" -ne 0 ]
+    [[ "$output" == *'--restore-config requires'* ]]
+  done
+  [ ! -d "$VM_INIT_STATE_DIR" ]
+}

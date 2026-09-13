@@ -8,24 +8,10 @@ YAZI_LIST="/etc/apt/sources.list.d/yazi.list"
 install_yazi() {
   require_commands apt-get dpkg || return 1
 
-  # Both artifacts must be present: a sources entry pointing at a missing
-  # keyring makes every later `apt-get update` fail.
-  if ! [[ -f "$YAZI_LIST" && -s "$YAZI_KEYRING" ]]; then
-    log_step "Setting up Yazi apt repository"
-    if ! download_file \
-          "https://yazi-rs.github.io/builds/yazi-keyring.gpg" \
-          "$YAZI_KEYRING"; then
-      log_fail "Failed to download Yazi keyring"
-      return 1
-    fi
-    chmod go+r "$YAZI_KEYRING"
-
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=${YAZI_KEYRING}] \
-https://yazi-rs.github.io/builds/ stable main" \
-      | tee "$YAZI_LIST" > /dev/null
-
-    run_quiet apt_get update -q
-  fi
+  ensure_apt_packages ca-certificates curl gnupg || return 1
+  local rc=0
+  yazi_repository apply || rc=$?
+  if [[ "$rc" == 2 ]]; then return 0; elif [[ "$rc" != 0 ]]; then return "$rc"; fi
 
   apt_install_with_report yazi
 }
@@ -52,4 +38,16 @@ verify_yazi() {
   fi
 
   return "$rc"
+}
+
+
+yazi_repository() {
+  reconcile_repository yazi "$YAZI_LIST" "$YAZI_KEYRING" https://yazi-rs.github.io/builds/yazi-keyring.gpg \
+    "deb [arch=$(dpkg --print-architecture) signed-by=${YAZI_KEYRING}] https://yazi-rs.github.io/builds/ stable main" "${1:-inspect}"
+}
+
+inspect_yazi() {
+  local rc=0
+  yazi_repository inspect || rc=$?
+  [[ "$rc" == 0 || "$rc" == 2 ]]
 }

@@ -94,6 +94,9 @@ setup_fisher_for() {
   fi
 
   if ! should_upgrade; then
+    if [[ "$(yq_get '.shell.tide' false "$CONFIG")" == true ]]; then
+      run_fish_as "$user" 'functions -q tide || fisher install IlanCosman/tide@v6' || return 1
+    fi
     log_current "fisher (${user})"
     return 0
   fi
@@ -102,11 +105,30 @@ setup_fisher_for() {
     run_fish_as "$user" 'functions -q tide || fisher install IlanCosman/tide@v6' || return 1
   fi
   log_step "Updating Fisher plugins (${user})"
+  local before after
+  before=$(fish_plugin_fingerprint "$user" "$home_dir" 2>/dev/null || true)
   if run_fish_as "$user" 'fisher update'; then
-    log_upgraded "fisher plugins (${user})"
+    after=$(fish_plugin_fingerprint "$user" "$home_dir" 2>/dev/null || true)
+    if [[ -n "$before" && "$before" == "$after" ]]; then log_current "fisher plugins (${user})"
+    else log_upgraded "fisher plugins (${user})"; fi
   else
     log_warn "fisher update (${user}) returned non-zero"
   fi
+}
+
+fish_plugin_fingerprint() {
+  run_as_user "$1" python3 -c '
+import hashlib, pathlib, sys
+root = pathlib.Path(sys.argv[1]) / ".config/fish"
+paths = [root / "fish_plugins"]
+for name in ("functions", "completions", "conf.d"):
+    paths.extend((root / name).rglob("*"))
+digest = hashlib.sha256()
+for path in sorted(paths):
+    if path.is_file():
+        digest.update(str(path.relative_to(root)).encode() + b"\0" + path.read_bytes() + b"\0")
+print(digest.hexdigest())
+' "$2"
 }
 
 fish_quote() {
@@ -193,10 +215,94 @@ write_shell_file() {
     tempfile=$(mktemp "$(dirname "$destination")/.vm-init.XXXXXX")
     trap '\''rm -f "$tempfile"'\'' EXIT
     cat > "$tempfile"
+    if cmp -s "$tempfile" "$destination"; then exit 0; fi
+    if [[ -f "$destination" ]]; then cp -p "$destination" "${destination}.vm-init.bak"; fi
     chmod 0644 "$tempfile"
     mv -f "$tempfile" "$destination"
   ' _ "$2"
 }
+
+bash_aliases_match_for() {
+  local user="$1" home_dir="$2" key value check=''
+  while read -r key; do
+    [[ -n "$key" ]] || continue
+    value=$(shell_alias_value "$key") || return 1
+    check+="actual=\$(alias $(shell_command "$key") 2>/dev/null); alias $(shell_command "$key=$value"); expected=\$(alias $(shell_command "$key")); "
+    # shellcheck disable=SC2016 # expanded by the account's disposable Bash
+    check+='[[ "$actual" == "$expected" ]] || exit 1; '
+  done < <(yq -r '.shell.aliases // {} | keys | .[]' "$CONFIG")
+  [[ -n "$check" ]] || return 0
+  run_as_user "$user" bash --noprofile --rcfile "$home_dir/.bashrc" -ic "$check" </dev/null >/dev/null 2>&1
+}
+
+shell_observe_spec() {
+  local user="$1" spec="$2" actual file hash hook wanted_hook
+  actual=$(getent passwd "$user" | awk -F: '{print $7}') || return 1
+  [[ -n "$actual" ]] || return 1
+  file=$(jq -r '.file' <<< "$spec")
+  hash=$(reconcile_file_value "$file") || return 1
+  wanted_hook=$(jq -r '.hook' <<< "$spec")
+  hook="$wanted_hook"
+  if [[ -n "$wanted_hook" ]] && ! grep -qxF "$wanted_hook" "$(jq -r '.home' <<< "$spec")/.bashrc" 2>/dev/null; then hook=absent; fi
+  jq -cS --arg shell "$actual" --arg content "$hash" --arg hook "$hook" \
+    '.shell=$shell | .content=$content | .hook=$hook' <<< "$spec"
+}
+
+inspect_shell_account() {
+  local user="$1" home_dir="$2" expected="$3" shell="$4" shell_path="$5"
+  local managed hook='' saved previous prior_observed legacy=0 identity
+  managed=$(shell_managed_path "$shell" "$home_dir")
+  local VM_INIT_RESOURCE_LABEL="shell configuration for $user ($managed)"
+  export VM_INIT_RESOURCE_LABEL
+  if [[ "$shell" == bash ]]; then hook="source $(shell_command "$managed") # vm-init"; fi
+  identity=$(getent passwd "$user" | awk -F: '{print $1 ":" $3 ":" $6}') || return 1
+  SHELL_KEY="shell.account.$(printf '%s' "$identity" | _sha256_stdin)"
+  SHELL_DESIRED=$(jq -cnS --arg shell "$shell_path" --arg file "$managed" --arg content "$(reconcile_file_value "$expected")" \
+    --arg home "$home_dir" --arg hook "$hook" '{shell:$shell,file:$file,content:$content,home:$home,hook:$hook}') || return 1
+  SHELL_OBSERVED=$(shell_observe_spec "$user" "$SHELL_DESIRED") || return 1
+  SHELL_INITIAL_OBSERVED="$SHELL_OBSERVED"
+  saved=$(reconcile_load "$SHELL_KEY") || return 1
+  if [[ "$saved" != null && "$SHELL_OBSERVED" != "$SHELL_DESIRED" ]]; then
+    previous=$(jq -r '.desired' <<< "$saved")
+    prior_observed=$(shell_observe_spec "$user" "$previous") || return 1
+    if [[ "$prior_observed" == "$(jq -r '.observed' <<< "$saved")" ]]; then SHELL_OBSERVED="$prior_observed"; fi
+  fi
+  if [[ -e "$managed" || -L "$managed" ]] || reconcile_account_legacy shell "$user"; then legacy=1; fi
+  reconcile_decide "$SHELL_KEY" "$SHELL_DESIRED" "$SHELL_OBSERVED" "$legacy"
+}
+
+inspect_shell() (
+  local shell shell_path temp user home_dir dependency
+  shell=$(yq_get '.shell.default_shell' fish "$CONFIG")
+  shell_path="${VM_INIT_SHELL_PATH:-/usr/bin/$shell}"
+  temp=$(mktemp) || return 1
+  trap 'rm -f "$temp"' EXIT
+  while read -r dependency; do
+    if [[ "$dependency" == bat ]] && is_installed batcat; then continue; fi
+    if ! is_installed "$dependency"; then
+      reconcile_report "shell.dependencies.$dependency" pending "$dependency installed" missing 'required shell dependency'
+    fi
+  done < <(shell_required_packages | sort -u)
+  if ! render_shell_config "$shell" > "$temp"; then
+    reconcile_report shell.dependencies pending 'required shell dependencies' missing 'install dependencies before rendering'; return 0
+  fi
+  while IFS=: read -r user home_dir; do
+    inspect_shell_account "$user" "$home_dir" "$temp" "$shell" "$shell_path" || return 1
+    if [[ "$shell" == fish && -x "$shell_path" ]]; then
+      if [[ "$RECONCILE_ACTION" == unchanged ]] && ! fish_aliases_match_for "$user"; then
+        reconcile_report "$SHELL_KEY.aliases" drifted 'configured aliases' 'different effective aliases' "review startup files for $user"
+      fi
+      if [[ "$(yq_get '.shell.fisher' false "$CONFIG")" == true ]] && ! fisher_present_for "$user"; then
+        reconcile_report "$SHELL_KEY.fisher" pending installed missing "Fisher is missing for $user"
+      fi
+      if [[ "$(yq_get '.shell.tide' false "$CONFIG")" == true ]] && ! run_fish_as "$user" 'functions -q tide' probe >/dev/null 2>&1; then
+        reconcile_report "$SHELL_KEY.tide" pending installed missing "Tide is missing for $user"
+      fi
+    elif [[ "$RECONCILE_ACTION" == unchanged && "$shell" == bash && -f "$home_dir/.bashrc" ]] && ! bash_aliases_match_for "$user" "$home_dir"; then
+      reconcile_report "$SHELL_KEY.aliases" drifted 'configured aliases' 'different effective aliases' "review startup files for $user"
+    fi
+  done < <(target_users)
+)
 
 fish_aliases_match_for() {
   local user="$1" key value check='' quoted_key
@@ -217,7 +323,7 @@ fish_aliases_match_for() {
 
 install_shell() {
   require_commands chsh getent awk || return 1
-  local default_shell shell_path user home_dir managed temp packages=()
+  local default_shell shell_path user home_dir managed temp packages=() changed_users=''
   default_shell=$(yq_get '.shell.default_shell' fish "$CONFIG")
   mapfile -t packages < <(shell_required_packages | sort -u)
   log_step "Preparing shell dependencies: ${packages[*]}"
@@ -231,29 +337,57 @@ install_shell() {
   while IFS=: read -r user home_dir; do
     [[ -n "$user" ]] || continue
     managed=$(shell_managed_path "$default_shell" "$home_dir")
-    if ! write_shell_file "$user" "$managed" < "$temp"; then
-      rm -f "$temp"
-      log_fail "${user} cannot write ${managed}; check that this account owns its shell configuration directory"
-      return 1
+    inspect_shell_account "$user" "$home_dir" "$temp" "$default_shell" "$shell_path" || { rm -f "$temp"; return 1; }
+    if [[ "$RECONCILE_ACTION" == drift ]]; then continue; fi
+    local changed=false
+    if [[ "$RECONCILE_ACTION" == apply ]]; then
+      if [[ "$(shell_observe_spec "$user" "$SHELL_DESIRED")" != "$SHELL_INITIAL_OBSERVED" ]]; then
+        rm -f "$temp"; log_fail "${user}: shell settings changed during inspection"; return 1
+      fi
+      reconcile_begin "$SHELL_KEY" "$SHELL_DESIRED" "$SHELL_OBSERVED" || { rm -f "$temp"; return 1; }
+      if ! write_shell_file "$user" "$managed" < "$temp"; then
+        rm -f "$temp"
+        log_fail "${user} cannot write ${managed}; check that this account owns its shell configuration directory"
+        return 1
+      fi
+      reconcile_checkpoint "$SHELL_KEY" "$(shell_observe_spec "$user" "$SHELL_DESIRED")" || { rm -f "$temp"; return 1; }
+      if [[ "$default_shell" == bash ]]; then
+        local hook
+        hook="source $(shell_command "$managed") # vm-init"
+        # shellcheck disable=SC2016 # expanded by the target account's shell
+        run_as_user "$user" sh -c 'grep -qxF "$1" "$2" 2>/dev/null || printf "\n%s\n" "$1" >> "$2"' _ "$hook" "$home_dir/.bashrc" || { rm -f "$temp"; return 1; }
+        reconcile_checkpoint "$SHELL_KEY" "$(shell_observe_spec "$user" "$SHELL_DESIRED")" || { rm -f "$temp"; return 1; }
+      fi
+      if [[ "$(getent passwd "$user" | awk -F: '{print $7}')" != "$shell_path" ]]; then
+        if ! chsh -s "$shell_path" "$user"; then rm -f "$temp"; log_fail "Failed to change shell for $user"; return 1; fi
+      fi
+      changed=true
+      changed_users+="${changed_users:+, }$user"
     fi
-    if [[ "$default_shell" == bash ]]; then
-      local hook
-      hook="source $(shell_command "$managed") # vm-init"
-      # shellcheck disable=SC2016 # expanded by the target account's shell
-      run_as_user "$user" sh -c 'grep -qxF "$1" "$2" 2>/dev/null || printf "\n%s\n" "$1" >> "$2"' _ "$hook" "$home_dir/.bashrc" || { rm -f "$temp"; return 1; }
-    fi
-    if ! chsh -s "$shell_path" "$user"; then rm -f "$temp"; log_fail "Failed to change shell for $user"; return 1; fi
     if [[ "$default_shell" == fish && "$(yq_get '.shell.fisher' false "$CONFIG")" == true ]]; then
+      local plugins_before plugins_after
+      plugins_before=$(fish_plugin_fingerprint "$user" "$home_dir" 2>/dev/null || true)
       setup_fisher_for "$user" "$home_dir" || { rm -f "$temp"; return 1; }
+      plugins_after=$(fish_plugin_fingerprint "$user" "$home_dir" 2>/dev/null || true)
+      if [[ -n "$plugins_before" && "$plugins_before" != "$plugins_after" ]]; then
+        reconcile_report "$SHELL_KEY.plugins" in_sync installed installed 'plugin files changed' true
+        if [[ "$changed" != true ]]; then changed_users+="${changed_users:+, }$user"; fi
+      fi
     fi
-    if [[ "$default_shell" == fish ]] && ! fish_aliases_match_for "$user"; then
+    if { [[ "$default_shell" == fish ]] && ! fish_aliases_match_for "$user"; } \
+      || { [[ "$default_shell" == bash ]] && ! bash_aliases_match_for "$user" "$home_dir"; }; then
       log_info "${user}: some Fish aliases differ from your configuration"
-      vm_init_note "Review ${home_dir}/.config/fish/config.fish for aliases that override vm-init settings, then run status." action 'review alias overrides'
+      vm_init_note "Review ${user}'s shell startup files for aliases that override vm-init settings, then run status." action 'review alias overrides'
+      reconcile_report "$SHELL_KEY.aliases" drifted 'configured aliases' 'startup override' 'external shell settings override managed aliases'
     fi
-    log_ok "${default_shell} configured for ${user}"
+    SHELL_OBSERVED=$(shell_observe_spec "$user" "$SHELL_DESIRED") || { rm -f "$temp"; return 1; }
+    if [[ "$SHELL_OBSERVED" != "$SHELL_DESIRED" ]]; then rm -f "$temp"; log_fail "${user}: shell changes did not verify"; return 1; fi
+    reconcile_accept "$SHELL_KEY" "$SHELL_DESIRED" "$SHELL_OBSERVED" "$changed" || { rm -f "$temp"; return 1; }
+    if [[ "$changed" == true ]]; then log_ok "${default_shell} configured for ${user}"
+    else log_ok "${default_shell} unchanged for ${user}"; fi
   done < <(target_users)
   rm -f "$temp"
-  vm_init_note "Start a new session to use ${default_shell} (${VM_INIT_TARGET_USERS})." session
+  if [[ -n "$changed_users" ]]; then vm_init_note "Start a new session to use ${default_shell} (${changed_users})." session; fi
 }
 
 verify_shell() {
@@ -280,6 +414,9 @@ verify_shell() {
     else log_ok "${user}: managed shell settings match"; fi
     if [[ "$default_shell" == fish ]] && ! fish_aliases_match_for "$user"; then
       log_fail "${user}: active aliases differ; review ${home_dir}/.config/fish/config.fish"; rc=1
+    fi
+    if [[ "$default_shell" == bash ]] && ! bash_aliases_match_for "$user" "$home_dir"; then
+      log_fail "${user}: active Bash aliases differ from configuration"; rc=1
     fi
     if [[ "$default_shell" == fish && "$(yq_get '.shell.fisher' false "$CONFIG")" == true ]] && ! fisher_present_for "$user"; then
       log_fail "${user}: Fisher is missing"; rc=1

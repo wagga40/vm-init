@@ -43,7 +43,7 @@ Use `sudo vm-init status` afterward to check the selected features. When setup a
 | `sudo vm-init repair dns` | Restore DNS without needing a download or configuration parser |
 | `sudo vm-init update` | Update vm-init according to its installation layout |
 
-Existing options remain supported: `--dry-run`, `--verify`, `--update`, `--only`, `--skip`, `--config`/`-c`, `--force`/`-f`, `--no-upgrade`, `--fail-fast`, `--verbose`, `--list-modules`/`-l`, and `--write-default-config`/`-w`. Read-only modes cannot be combined with an update, recovery, or another write command.
+Existing options remain supported: `--dry-run`, `--verify`, `--update`, `--only`, `--skip`, `--config`/`-c`, `--force`/`-f`, `--no-upgrade`, `--fail-fast`, `--verbose`, `--list-modules`/`-l`, and `--write-default-config`/`-w`. Use `--restore-config` with apply or plan to restore managed settings to the selected YAML. Read-only modes cannot be combined with an update, recovery, or another write command.
 
 ```bash
 vm-init plan --config ./team.yml
@@ -59,9 +59,38 @@ The summary distinguishes **Ready** (completed), **Warnings** (completed with ca
 
 Follow-ups are grouped into **Required actions**, **Warnings**, **Session changes**, and **Notes**, with the module named beside each message. Firewall confirmation, alias conflicts, and pending reboots need action. Starting a new shell session or activating Docker group membership is a session reminder; a DNS recovery tip is informational. Neither reminder makes a ready module warn. The final result reports success, warnings, or outstanding actions once, without a green “Setup complete” after warnings or required actions.
 
-`status --json` uses the same distinction: `warned` has `observed_state: "warnings"`, while `needs_action` has `observed_state: "needs_action"`. Its `messages` array includes each message's `kind`, `module`, `summary`, and `message`. Warnings and pending actions still exit successfully; failures exit nonzero.
+`status --json` uses the same distinction: `warned` has `observed_state: "warnings"`, while `needs_action` has `observed_state: "needs_action"`. Its `messages` array includes each message's `kind`, `module`, `summary`, and `message`. During apply, warnings and pending actions exit successfully; failures exit nonzero. Status also exits nonzero when requested configuration is unmet.
 
 On Ubuntu, plans show installed and candidate APT versions from the local cache. Applying may refresh that cache and resolve additional dependencies, so these versions are an estimate. Shell plans also list the managed file for each account.
+
+## Repeat runs and configuration drift
+
+`apply` compares the selected configuration, current settings, and the last verified baseline. Configuration modules report whether settings changed or remained unchanged. A matching firewall needs no reload or new SSH confirmation; unchanged shell files and login shells need no new session reminder. An enabled service that has stopped is started and checked without rewriting its configuration.
+
+| Current situation | Apply behavior |
+| --- | --- |
+| Requested settings already match | Keep them and record the verified baseline |
+| New module or account | Initialize the requested settings |
+| YAML changed and live settings still match the baseline | Apply the required changes |
+| Live settings changed outside vm-init | Preserve the changes and warn about drift |
+| Both YAML and live settings changed incompatibly | Preserve the affected configuration and report the conflict |
+| Previously managed settings have no reliable baseline | Adopt matching settings; preserve unexplained mismatches |
+
+To restore drift to your selected YAML, preview and apply the same scoped operation:
+
+```bash
+sudo vm-init plan --config /etc/vm-init/vm-init.yml --only ufw,shell --restore-config --no-upgrade
+sudo vm-init apply --config /etc/vm-init/vm-init.yml --only ufw,shell --restore-config --no-upgrade
+sudo vm-init status --config /etc/vm-init/vm-init.yml --only ufw,shell
+```
+
+Restoration respects module filters and selected accounts. It preserves unrelated firewall rules and user startup files. An external override that prevents the requested effective configuration still requires manual resolution. `--force` retains its broader tool reinstall behavior and also permits configuration restoration. It does not require rewriting settings that already match.
+
+Software updates keep their existing policy. A normal apply can check and update packages or plugins even when configuration is unchanged; `--no-upgrade` skips updates to installed software while still installing missing dependencies. Configuration restoration does not itself force package reinstalls or downgrades. `update` continues to update vm-init itself.
+
+Baselines and interrupted resource updates are saved privately under `/var/lib/vm-init/baselines/`. Successful resources keep their own baselines when another resource fails. `repair failed` preserves the restoration option and rechecks saved partial work before resuming. Firewall baselines become final only after remote confirmation; a rollback retains the previous baseline.
+
+`plan` and `status` never advance baselines. Plans report `unknown` when permissions or local tools prevent inspection. `status --json` retains schema version 1 and existing statuses, with additive module fields: `configuration_state` (`in_sync`, `pending`, `drifted`, `unknown`, or `not_checked`), `changed`, and `differences` containing each resource's expected and observed state and reason. Configuration drift is a warning during apply; status exits nonzero while requested settings are unmet. Existing pending reboots and firewall confirmations remain visible even if no new configuration changes are needed.
 
 ## Accounts and configuration
 
@@ -125,7 +154,7 @@ Configuration is checked before applying or listing modules. Invalid booleans, m
 | `dns` | off | dnsproxy with encrypted DNS and systemd-resolved routing |
 | `kernel` | off | The `mitigations_off` boot-parameter setting; requires reboot |
 
-Shell preparation includes the packages required by its selected integrations and known aliases. Ubuntu's `batcat` command is used for bat aliases when `bat` is not on PATH. Managed Fish settings live in `~/.config/fish/conf.d/90-vm-init.fish`; managed Bash settings live in `~/.config/vm-init/bash.sh`, loaded by `.bashrc`. Reapplying replaces that managed file, so removed aliases do not accumulate there. Other application configuration files are preserved.
+Shell preparation includes the packages required by its selected integrations and known aliases. Ubuntu's `batcat` command is used for bat aliases when `bat` is not on PATH. Managed Fish settings live in `~/.config/fish/conf.d/90-vm-init.fish`; managed Bash settings live in `~/.config/vm-init/bash.sh`, loaded by `.bashrc`. A YAML change replaces the managed file when needed, so removed aliases do not accumulate. Local edits are preserved as drift until restoration is requested; replaced shell files retain a `.vm-init.bak` backup. Other application configuration files are preserved.
 
 GitHub release tools can be added declaratively:
 
@@ -143,7 +172,7 @@ Available checksums must match before installation. Upstreams without sidecars p
 
 ## Firewall and DNS recovery
 
-UFW changes preserve the current SSH port when `SSH_CONNECTION` is available. For remote runs, a systemd timer restores the previous firewall in 120 seconds unless you confirm from a **new SSH session**:
+UFW changes preserve the current SSH port when `SSH_CONNECTION` is available. A matching firewall is left untouched. When a remote run changes the firewall, a systemd timer restores the previous firewall in 120 seconds unless you confirm from a **new SSH session**:
 
 ```bash
 sudo vm-init confirm-firewall
@@ -168,7 +197,7 @@ sudo vm-init repair dns --with-fallback
 sudo vm-init-recover-dns --with-fallback
 ```
 
-`--with-fallback` permits temporary public DNS if restoring the saved configuration does not restore resolution. `--iface` and `--fallback "1.1.1.1 9.9.9.9"` remain available. Disable DNS management in your configuration before applying again if you want to retain the recovered settings.
+`--with-fallback` permits temporary public DNS if restoring the saved configuration does not restore resolution. `--iface` and `--fallback "1.1.1.1 9.9.9.9"` remain available. Recovery is reported as drift on subsequent applies. Disable DNS management to stop managing the recovered settings, or use `apply --only dns --restore-config` to activate the selected DNS configuration again.
 
 ```yaml
 dns:

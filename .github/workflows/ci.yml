@@ -268,7 +268,18 @@ jobs:
       - name: Run second pass to verify repeat execution
         run: |
           set -euo pipefail
-          sudo ./vm-init.sh --config ci-real-install.yml --only apt,shell
+          for account in vm-init-ci vm-init-ci-two; do
+            sudo stat -c '%i:%Y:%Z' "/home/$account/.config/fish/conf.d/90-vm-init.fish"
+          done > shell-before.txt
+          sudo ./vm-init.sh --config ci-real-install.yml --only apt,shell --no-upgrade | tee second-pass.log
+          for account in vm-init-ci vm-init-ci-two; do
+            sudo stat -c '%i:%Y:%Z' "/home/$account/.config/fish/conf.d/90-vm-init.fish"
+          done > shell-after.txt
+          cmp shell-before.txt shell-after.txt
+          if grep -q 'Start a new session' second-pass.log; then
+            echo 'Unchanged shell setup repeated a session reminder'
+            exit 1
+          fi
 
       - name: Verify the installed state
         run: |
@@ -288,6 +299,7 @@ jobs:
           test "$(getent passwd vm-init-untouched | cut -d: -f7)" = /bin/bash
           sudo ./vm-init.sh status --json --config ci-real-install.yml > status.json
           jq -e 'all(.modules[]; .status != "failed")' status.json
+          jq -e '.modules[] | select(.name == "shell") | .configuration_state == "in_sync" and .changed == false' status.json
           for account in vm-init-ci vm-init-ci-two; do
             test "$(sudo stat -c %U "/home/$account/.config/fish/conf.d/90-vm-init.fish")" = "$account"
           done
@@ -298,7 +310,7 @@ jobs:
           sudo mkdir -m 0755 /var/tmp/vm-init-ci-protected
           sudo rm -r /home/vm-init-ci-two/.config/fish/conf.d
           sudo -u vm-init-ci-two ln -s /var/tmp/vm-init-ci-protected /home/vm-init-ci-two/.config/fish/conf.d
-          if sudo ./vm-init.sh apply --config ci-real-install.yml --only shell --user vm-init-ci-two --no-upgrade; then
+          if sudo ./vm-init.sh apply --restore-config --config ci-real-install.yml --only shell --user vm-init-ci-two --no-upgrade; then
             echo 'Shell setup unexpectedly wrote to a protected directory'
             exit 1
           fi
