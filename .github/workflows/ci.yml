@@ -231,7 +231,17 @@ jobs:
         run: |
           set -euo pipefail
           trap 'echo "::error::Verification failed at line $LINENO: $BASH_COMMAND"' ERR
-          sudo ./vm-init.sh --config ci-real-install.yml --verify --only apt,shell
+          if sudo ./vm-init.sh --config ci-real-install.yml --verify --only apt,shell > verification.log 2>&1; then
+            cat verification.log
+          else
+            cat verification.log
+            details=$(<verification.log)
+            details=${details//'%'/'%25'}
+            details=${details//$'\r'/'%0D'}
+            details=${details//$'\n'/'%0A'}
+            echo "::error title=Installed state verification::$details"
+            exit 1
+          fi
           test "$(getent passwd vm-init-untouched | cut -d: -f7)" = /bin/bash
           sudo ./vm-init.sh status --json --config ci-real-install.yml > status.json
           jq -e 'all(.modules[]; .status != "failed")' status.json
