@@ -196,6 +196,17 @@ shell_fixture() {
   [ "$(reconcile_summary test | jq -r .changed)" = true ]
 }
 
+@test "configuration reports keep resource labels and filter summaries by module" {
+  VM_INIT_RESOURCE_LABEL='Shell settings for Alice' reconcile_report test.value drifted desired local-edit 'local change'
+  VM_INIT_CURRENT_MODULE=other reconcile_report other.value unknown expected unavailable 'cannot inspect'
+  jq -es 'map(select(.module == "test")) | length == 1 and
+    .[0].label == "Shell settings for Alice" and .[0].resource == "test.value"' "$VM_INIT_RECONCILE_REPORT"
+  run reconcile_summary test
+  [ "$status" -eq 0 ]
+  jq -e '.configuration_state == "drifted" and .changed == false and .differences ==
+    [{resource:"Shell settings for Alice",expected:"desired",observed:"local-edit",reason:"local change"}]' <<< "$output"
+}
+
 @test "unchanged firewall avoids snapshots timers rules and reloads over SSH" {
   source "$VM_INIT_REPO_ROOT/modules/ufw.sh"
   export CONFIG="$TEST_TMPDIR/config.yml" SSH_CONNECTION='198.51.100.1 4000 192.0.2.1 22'

@@ -40,11 +40,12 @@ reconcile_save() {
 
 reconcile_report() {
   local key="$1" state="$2" desired="$3" observed="$4" reason="$5" changed="${6:-false}" row
-  row=$(jq -cn --arg module "${VM_INIT_CURRENT_MODULE:-${key%%.*}}" --arg resource "$key" \
-    --arg label "${VM_INIT_RESOURCE_LABEL:-$key}" \
+  # module and label are reserved variable names in jq 1.6 (Ubuntu 22.04).
+  row=$(jq -cn --arg module_name "${VM_INIT_CURRENT_MODULE:-${key%%.*}}" --arg resource "$key" \
+    --arg resource_label "${VM_INIT_RESOURCE_LABEL:-$key}" \
     --arg state "$state" --arg expected "$desired" --arg observed "$observed" \
     --arg reason "$reason" --argjson changed "$changed" \
-    '{module:$module,resource:$resource,label:$label,state:$state,expected:$expected,observed:$observed,reason:$reason,changed:$changed}') || return 1
+    '{module:$module_name,resource:$resource,label:$resource_label,state:$state,expected:$expected,observed:$observed,reason:$reason,changed:$changed}') || return 1
   if [[ -n "${VM_INIT_RECONCILE_REPORT:-}" ]]; then printf '%s\n' "$row" >> "$VM_INIT_RECONCILE_REPORT"; fi
 }
 
@@ -219,8 +220,8 @@ reconcile_summary() {
   if [[ ! -s "${VM_INIT_RECONCILE_REPORT:-}" ]]; then
     printf '{"configuration_state":"not_checked","changed":false,"differences":[]}\n'; return
   fi
-  jq -sc --arg module "$module" '
-    map(select(.module == $module)) as $all | $all | group_by(.resource) | map(.[-1]) as $rows |
+  jq -sc --arg module_name "$module" '
+    map(select(.module == $module_name)) as $all | $all | group_by(.resource) | map(.[-1]) as $rows |
     {configuration_state:(if any($rows[]; .state == "unknown") then "unknown"
       elif any($rows[]; .state == "drifted") then "drifted"
       elif any($rows[]; .state == "pending") then "pending"

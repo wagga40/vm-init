@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Commit or tag to validate'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -15,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Install shellcheck
         run: |
@@ -67,6 +75,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - name: Install yamllint
         run: |
           sudo apt-get update -qq
@@ -77,21 +87,31 @@ jobs:
             vm-init.yml .github/workflows/
 
   unit-tests:
-    name: Unit tests (bats)
-    runs-on: ubuntu-latest
+    name: Unit tests (bats, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Install bats
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq bats jq yq python3 fish
+          sudo apt-get install -y -qq bats jq python3 fish
+          if ! command -v yq >/dev/null; then
+            sudo ./vm-init.sh prepare
+          fi
+          jq --version
 
       - name: Run bats unit tests
         run: |
           if [[ -d tests/unit ]] && compgen -G 'tests/unit/*.bats' > /dev/null; then
-            bats --print-output-on-failure tests/unit
+            bats tests/unit
           else
             echo "No unit tests yet"
           fi
@@ -127,6 +147,8 @@ jobs:
           useradd --create-home vm-init-test
 
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Install yq (mikefarah v4)
         run: |
@@ -175,6 +197,8 @@ jobs:
         ubuntu: ['24.04', '26.04']
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - name: Build isolated service-test system
         run: docker build --build-arg UBUNTU_VERSION=${{ matrix.ubuntu }} -t vm-init-services tests/services
       - name: Run live service checks
@@ -217,6 +241,8 @@ jobs:
         os: [ubuntu-22.04, ubuntu-24.04]
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Prepare configuration tools
         run: |

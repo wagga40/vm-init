@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # Real firewall and resolver tests, restricted to a disposable container.
 set -euo pipefail
+service_test_failure() {
+  local line="$1" failed_command="$2" log
+  echo "Service check failed at line $line: $failed_command" >&2
+  for log in drift.log rollback.log unchanged-dns.log fail2ban-drift.log; do
+    if [[ -f "$log" ]]; then cat "$log" >&2; fi
+  done
+}
+trap 'service_test_failure "$LINENO" "$BASH_COMMAND"' ERR
 [[ -f /.dockerenv && "${VM_INIT_SERVICE_TEST:-}" == 1 ]] || {
   echo 'Run only in the dedicated service-test container.' >&2
   exit 1
@@ -78,6 +86,9 @@ jq -e 'all(.modules[]; .status != "failed")' status.json
 # Foreign DNS drift is preserved; explicit restoration still verifies and rolls back on conflict.
 cp /etc/systemd/resolved.conf.d/99-vm-init-dnsproxy.conf /tmp/expected-dns.conf
 printf '[Resolve]\nDNS=127.0.0.1:5354\n' > /etc/systemd/resolved.conf.d/zz-foreign.conf
+# Activate the foreign setting before testing runtime drift. An unchanged
+# apply intentionally leaves resolved running with its current configuration.
+systemctl restart systemd-resolved
 ./vm-init.sh apply --config service-test.yml --only dns --no-log > drift.log 2>&1
 grep -q 'configuration drift' drift.log
 if ./vm-init.sh status --config service-test.yml --only dns --no-log; then
