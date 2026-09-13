@@ -235,7 +235,7 @@ install_ufw() (
     confirm_command=$(shell_command sudo "${VM_INIT_EXECUTABLE:-vm-init}" confirm-firewall)
     log_info "Open a new SSH session now and run: $confirm_command"
     log_info "Automatic rollback is scheduled after ${VM_INIT_FIREWALL_CONFIRM_SECONDS:-120}s. Other setup tasks can continue."
-    vm_init_note "Confirm firewall changes from a new SSH session: $confirm_command (automatic rollback after ${VM_INIT_FIREWALL_CONFIRM_SECONDS:-120}s)."
+    vm_init_note "Confirm firewall changes from a new SSH session: $confirm_command (automatic rollback ${VM_INIT_FIREWALL_CONFIRM_SECONDS:-120}s after firewall changes began)." action 'confirm firewall'
   fi
 )
 
@@ -271,7 +271,8 @@ verify_ufw() {
   fi
   if (( rc == 0 )); then log_ok 'Firewall active; requested policies and allow rules match'; fi
   if [[ "${1:-status}" != applying && -f "$VM_INIT_STATE_DIR/firewall-pending" ]]; then
-    log_warn 'Firewall confirmation is pending; reconnect and run confirm-firewall before automatic rollback'
+    log_info 'Firewall confirmation is pending; reconnect and run confirm-firewall before automatic rollback'
+    vm_init_note "From a new SSH session, run: $(shell_command sudo "${VM_INIT_EXECUTABLE:-vm-init}" confirm-firewall) before the scheduled automatic rollback." action 'confirm firewall'
   fi
   return "$rc"
 }

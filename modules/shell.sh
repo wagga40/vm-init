@@ -247,13 +247,13 @@ install_shell() {
       setup_fisher_for "$user" "$home_dir" || { rm -f "$temp"; return 1; }
     fi
     if [[ "$default_shell" == fish ]] && ! fish_aliases_match_for "$user"; then
-      log_warn "${user}: some Fish aliases differ from your configuration"
-      vm_init_note "Review ${home_dir}/.config/fish/config.fish for aliases that override vm-init settings, then run status."
+      log_info "${user}: some Fish aliases differ from your configuration"
+      vm_init_note "Review ${home_dir}/.config/fish/config.fish for aliases that override vm-init settings, then run status." action 'review alias overrides'
     fi
     log_ok "${default_shell} configured for ${user}"
   done < <(target_users)
   rm -f "$temp"
-  vm_init_note "Start a new session to use ${default_shell} (${VM_INIT_TARGET_USERS})."
+  vm_init_note "Start a new session to use ${default_shell} (${VM_INIT_TARGET_USERS})." session
 }
 
 verify_shell() {

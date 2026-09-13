@@ -204,6 +204,7 @@ log_ok()    { echo -e "  ${_C_GREEN}${_SYM_OK}${_C_RESET} $1"; }
 log_skip()  { echo -e "  ${_C_DIM}${_SYM_SKIP} $1${_C_RESET}"; }
 log_warn()  {
   VM_INIT_WARN_COUNT=$((VM_INIT_WARN_COUNT + 1))
+  vm_init_note "$1" warning
   echo -e "  ${_C_YELLOW}${_SYM_WARN}${_C_RESET} $1"
 }
 log_fail()  { echo -e "  ${_C_RED}${_SYM_FAIL}${_C_RESET} $1" >&2; }
@@ -221,13 +222,32 @@ _tally() {
   printf '%s\n' "$1" >> "${VM_INIT_TALLY_FILE}" 2>/dev/null || true
 }
 
-# Record a follow-up action for the summary's "Next steps" block — a reboot, a
-# re-login, a recovery command. Modules run inside run_with_errexit subshells,
-# so notes travel through an env-passed file for the same reason the tally does.
-# Duplicates are collapsed when the summary renders.
+# Record a message with its module and intent. Informational notes and session
+# reminders do not imply a warning or unfinished setup. Only explicit actions
+# affect readiness; their short summary is used in the module row.
+# Usage: vm_init_note "message" [info|session|action|warning] [short summary]
+# Modules run in subshells, so messages travel through an env-passed file.
 vm_init_note() {
   [[ -n "${VM_INIT_NOTES_FILE:-}" ]] || return 0
-  printf '%s\n' "$1" >> "${VM_INIT_NOTES_FILE}" 2>/dev/null || true
+  local message="$1" kind="${2:-info}" summary="${3:--}"
+  # Keep each record on one line, even when command output contains whitespace.
+  message="${message//$'\t'/ }"; message="${message//$'\n'/ }"
+  summary="${summary//$'\t'/ }"; summary="${summary//$'\n'/ }"
+  printf '%s\t%s\t%s\t%s\n' "$kind" "${VM_INIT_CURRENT_MODULE:-general}" "$summary" "$message" \
+    >> "${VM_INIT_NOTES_FILE}" 2>/dev/null || true
+}
+
+# Deduplicate within each module/category, retaining the first occurrence.
+# Firewall confirmation can finish while later modules are running; do not
+# keep showing its action after confirmation or rollback has cleared it.
+vm_init_notes() {
+  [[ -s "${VM_INIT_NOTES_FILE:-}" ]] || return 0
+  local firewall_pending=0
+  [[ ! -f "${VM_INIT_STATE_DIR:-}/firewall-pending" ]] || firewall_pending=1
+  awk -F '\t' -v pending="$firewall_pending" '
+    $1 == "action" && $2 == "ufw" && !pending { next }
+    !seen[$0]++
+  ' "$VM_INIT_NOTES_FILE"
 }
 
 log_installed() {

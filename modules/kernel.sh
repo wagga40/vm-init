@@ -49,7 +49,7 @@ install_kernel() {
     log_step "Running update-grub"
     run_quiet update-grub
     log_ok "update-grub complete (reboot to apply)"
-    vm_init_note "Reboot required: kernel boot parameters changed."
+    vm_init_note "Reboot when convenient to apply the changed kernel boot parameters." action 'reboot required'
   fi
 }
 
@@ -163,7 +163,8 @@ verify_kernel() {
   if grep -qw 'mitigations=off' /proc/cmdline; then running="true"; else running="false"; fi
 
   if [[ "$running" != "$configured" ]]; then
-    log_warn "Running kernel does not match grub yet — reboot pending"
+    log_info "Running kernel does not match grub yet — reboot pending"
+    vm_init_note "Reboot when convenient to apply the configured kernel boot parameters, then run status." action 'reboot required'
     return 0
   fi
   log_ok "running kernel matches (mitigations=off: ${running})"

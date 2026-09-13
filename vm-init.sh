@@ -719,10 +719,10 @@ if [[ "$VM_INIT_DRY_RUN" != "1" && "$VM_INIT_VERIFY" != "1" ]]; then
     : > "$VM_INIT_TALLY_FILE"
     export VM_INIT_TALLY_FILE
   fi
+fi
 
-  # Notes file: follow-up actions ("reboot required", "log out and back in")
-  # that modules discover while running. Same env-passed-file mechanism as the
-  # tally, and for the same reason -- modules execute inside subshells.
+# Verification can also discover warnings and pending actions.
+if [[ "$VM_INIT_DRY_RUN" != "1" ]]; then
   VM_INIT_NOTES_FILE=$(mktemp 2>/dev/null || true)
   if [[ -n "$VM_INIT_NOTES_FILE" ]]; then
     : > "$VM_INIT_NOTES_FILE"
@@ -1285,6 +1285,28 @@ record_module_status() {
   VM_INIT_MODULE_ELAPSED+=("${4:-}")
 }
 
+# A successful command can still leave an explicit action, or report warnings.
+# Notes alone never change readiness. Failed commands always take precedence.
+record_module_result() {
+  local section="$1" rc="$2" warnings="$3" elapsed="$4" success_detail="${5:-}" failure_detail="${6:-exit $2}"
+  local action_detail captured_warnings
+  action_detail=$(vm_init_notes | awk -F '\t' -v module="$section" \
+    '$1 == "action" && $2 == module && !found { print ($3 == "-" ? "see required actions" : $3); found=1 }')
+  captured_warnings=$(vm_init_notes | awk -F '\t' -v module="$section" \
+    '$1 == "warning" && $2 == module { n++ } END { print n+0 }')
+  if (( captured_warnings > warnings )); then warnings="$captured_warnings"; fi
+  if (( rc != 0 )); then
+    record_module_status "$section" failed "$failure_detail" "$elapsed"
+  elif [[ -n "$action_detail" ]]; then
+    if (( warnings > 0 )); then action_detail+="; ${warnings} warning(s)"; fi
+    record_module_status "$section" needs_action "$action_detail" "$elapsed"
+  elif (( warnings > 0 )); then
+    record_module_status "$section" warned "${warnings} warning(s); see below" "$elapsed"
+  else
+    record_module_status "$section" ok "$success_detail" "$elapsed"
+  fi
+}
+
 # Load a module's functions unless they are already defined. Single-file bundles
 # pre-define every module, so this guard is what lets one orchestrator serve both
 # layouts. Keyed on the install entry point, which every module defines.
@@ -1321,7 +1343,8 @@ _module_should_run() {
 
 run_module() {
   local section="$1" module_file="$2" entry_func="$3" progress="${4:-}"
-  local rc=0 pre_warn new_warns start_ts elapsed status pre_notes=0 post_notes=0
+  local rc=0 pre_warn new_warns start_ts elapsed status
+  local VM_INIT_CURRENT_MODULE="$section"
 
   VM_INIT_LAST_MODULE_RC=0
   _module_should_run "$section" "$progress" || return 0
@@ -1334,7 +1357,6 @@ run_module() {
   fi
 
   pre_warn="${VM_INIT_WARN_COUNT:-0}"
-  if [[ -f "${VM_INIT_NOTES_FILE:-}" ]]; then pre_notes=$(wc -l < "$VM_INIT_NOTES_FILE"); fi
   start_ts=$(date +%s)
 
   source_module "$module_file" "$entry_func"
@@ -1347,20 +1369,8 @@ run_module() {
   elapsed=$(( $(date +%s) - start_ts ))
   new_warns=$(( ${VM_INIT_WARN_COUNT:-0} - pre_warn ))
 
-  if [[ -f "${VM_INIT_NOTES_FILE:-}" ]]; then post_notes=$(wc -l < "$VM_INIT_NOTES_FILE"); fi
-  if (( rc != 0 )); then
-    status="failed"
-    record_module_status "$section" "$status" "exit ${rc}" "$elapsed"
-  elif (( post_notes > pre_notes )); then
-    status="warned"
-    record_module_status "$section" "$status" "see next steps" "$elapsed"
-  elif (( new_warns > 0 )); then
-    status="warned"
-    record_module_status "$section" "$status" "${new_warns} warning(s)" "$elapsed"
-  else
-    status="ok"
-    record_module_status "$section" "$status" "" "$elapsed"
-  fi
+  record_module_result "$section" "$rc" "$new_warns" "$elapsed"
+  status="${VM_INIT_MODULE_STATUS[${#VM_INIT_MODULE_STATUS[@]}-1]}"
 
   # Remember the outcome so a later --verify can tell "never provisioned here"
   # apart from "provisioned once, then drifted".
@@ -1376,6 +1386,7 @@ run_module() {
 verify_module() {
   local section="$1" module_file="$2" entry_func="$3" progress="${4:-}"
   local rc=0 pre_warn new_warns start_ts elapsed verify_func last_status last_ts
+  local VM_INIT_CURRENT_MODULE="$section"
 
   VM_INIT_LAST_MODULE_RC=0
   _module_should_run "$section" "$progress" || return 0
@@ -1408,13 +1419,7 @@ verify_module() {
   elapsed=$(( $(date +%s) - start_ts ))
   new_warns=$(( ${VM_INIT_WARN_COUNT:-0} - pre_warn ))
 
-  if (( rc != 0 )); then
-    record_module_status "$section" "failed" "verification failed" "$elapsed"
-  elif (( new_warns > 0 )); then
-    record_module_status "$section" "warned" "${new_warns} warning(s)" "$elapsed"
-  else
-    record_module_status "$section" "ok" "verified" "$elapsed"
-  fi
+  record_module_result "$section" "$rc" "$new_warns" "$elapsed" verified 'verification failed'
 
   VM_INIT_LAST_MODULE_RC="$rc"
   return 0
@@ -1456,7 +1461,7 @@ for module_spec in "${VM_INIT_MODULES[@]}"; do
 
   if (( VM_INIT_ABORTED )); then
     if ! module_excluded "$section" && [[ "$(yq_get ".${section}.enabled" false "$CONFIG")" == true ]]; then
-      record_module_status "$section" "warned" 'not run after earlier failure'
+      record_module_status "$section" "not_run" 'stopped after earlier failure'
     else
       record_module_status "$section" "skipped" 'not selected'
     fi
@@ -1491,65 +1496,74 @@ done
 # ---------------------------------------------------------------------------
 
 # Firewall confirmation/rollback can finish while later modules are running.
-if [[ "$VM_INIT_DRY_RUN" != 1 && "$VM_INIT_VERIFY" != 1 && -f "$VM_INIT_STATE_DIR/firewall-result" ]]; then
-  read -r firewall_run firewall_result < "$VM_INIT_STATE_DIR/firewall-result"
-  if [[ "$firewall_run" == "$VM_INIT_RUN_ID" ]]; then
-    for ((i=0; i<${#VM_INIT_MODULE_NAMES[@]}; i++)); do
-      [[ "${VM_INIT_MODULE_NAMES[$i]}" == ufw && "${VM_INIT_MODULE_STATUS[$i]}" != failed ]] || continue
-      case "$firewall_result" in
-        rolled_back) VM_INIT_MODULE_STATUS[i]=failed; VM_INIT_MODULE_DETAIL[i]='confirmation expired; previous firewall restored' ;;
-        confirmed) VM_INIT_MODULE_STATUS[i]=ok; VM_INIT_MODULE_DETAIL[i]='confirmed from a new session' ;;
-      esac
-      state_set module.ufw.status "${VM_INIT_MODULE_STATUS[$i]}"
-    done
+reconcile_firewall_result() {
+  local i firewall_run firewall_result
+  if [[ "$VM_INIT_DRY_RUN" != 1 && "$VM_INIT_VERIFY" != 1 && -f "$VM_INIT_STATE_DIR/firewall-result" ]]; then
+    read -r firewall_run firewall_result < "$VM_INIT_STATE_DIR/firewall-result"
+    if [[ "$firewall_run" == "$VM_INIT_RUN_ID" ]]; then
+      for ((i=0; i<${#VM_INIT_MODULE_NAMES[@]}; i++)); do
+        [[ "${VM_INIT_MODULE_NAMES[$i]}" == ufw && "${VM_INIT_MODULE_STATUS[$i]}" != failed ]] || continue
+        case "$firewall_result" in
+          rolled_back) VM_INIT_MODULE_STATUS[i]=failed; VM_INIT_MODULE_DETAIL[i]='confirmation expired; previous firewall restored' ;;
+          confirmed)
+            VM_INIT_MODULE_STATUS[i]=ok
+            VM_INIT_MODULE_DETAIL[i]='confirmed from a new session'
+            if vm_init_notes | awk -F '\t' '$1 == "warning" && $2 == "ufw" { found=1 } END { exit !found }'; then
+              VM_INIT_MODULE_STATUS[i]=warned
+              VM_INIT_MODULE_DETAIL[i]+='; see warnings below'
+            fi
+            ;;
+        esac
+        state_set module.ufw.status "${VM_INIT_MODULE_STATUS[$i]}"
+      done
+    fi
   fi
-fi
+}
 
-# Render one summary row: symbol, module, optional detail, optional duration.
+# Keep status, module and duration aligned even when a detail is long.
 _summary_row() {
   local color="$1" sym="$2" name="$3" detail="$4" secs="$5"
   local suffix="" dur=""
   [[ -n "$detail" ]] && suffix="(${detail})"
   [[ -n "$secs" ]] && dur="$(format_duration "$secs")"
-  # Pad the detail column only when a duration follows it, so rows without one
-  # do not trail whitespace.
-  if [[ -n "$dur" ]]; then
-    printf "  ${color}%-13s${_C_RESET} %-18s ${_C_DIM}%-26s%s${_C_RESET}\n" \
-      "$sym" "$name" "$suffix" "$dur"
-  elif [[ -n "$suffix" ]]; then
-    printf "  ${color}%-13s${_C_RESET} %-18s ${_C_DIM}%s${_C_RESET}\n" \
-      "$sym" "$name" "$suffix"
-  else
-    printf "  ${color}%-13s${_C_RESET} %-18s\n" "$sym" "$name"
-  fi
+  printf "  ${color}%-13s${_C_RESET} %-18s ${_C_DIM}%6s%s${_C_RESET}\n" \
+    "$sym" "$name" "$dur" "${suffix:+  $suffix}"
 }
 
-# Follow-up actions modules recorded via vm_init_note, deduplicated in the order
-# they were first raised.
-print_next_steps() {
-  [[ -n "${VM_INIT_NOTES_FILE:-}" && -s "${VM_INIT_NOTES_FILE}" ]] || return 0
+print_message_group() {
+  local kind="$1" title="$2" category module summary message count=0 marker
+  while IFS=$'\t' read -r category module summary message; do
+    [[ "$category" == "$kind" ]] || continue
+    if (( count == 0 )); then
+      echo ""
+      echo -e "${_C_BOLD}${title}${_C_RESET}"
+    fi
+    count=$((count + 1))
+    marker="${_SYM_BULLET}"
+    if [[ "$kind" == action ]]; then marker="${count}."; fi
+    printf "  ${_C_CYAN}%s${_C_RESET} %s: %s\n" "$marker" "$module" "$message"
+  done < <(vm_init_notes)
+}
 
-  echo ""
-  echo -e "${_C_BOLD}Next steps${_C_RESET}"
-  local note
-  while IFS= read -r note; do
-    [[ -z "$note" ]] && continue
-    if [[ "$note" == 'Confirm firewall changes'* && ! -f "$VM_INIT_STATE_DIR/firewall-pending" ]]; then continue; fi
-    echo -e "  ${_C_CYAN}${_SYM_BULLET}${_C_RESET} ${note}"
-  done < <(awk '!seen[$0]++' "$VM_INIT_NOTES_FILE")
+print_next_steps() {
+  print_message_group action 'Required actions'
+  print_message_group warning 'Warnings'
+  print_message_group session 'Session changes'
+  print_message_group info 'Notes'
 }
 
 print_summary() {
   local i name status detail secs
-  local ok=0 skip=0 warn=0 fail=0
+  local ok=0 skip=0 warn=0 fail=0 action=0 not_run=0
   local total=${#VM_INIT_MODULE_NAMES[@]}
   local failed_names=""
-  local end_ts elapsed title
+  local end_ts elapsed title ready_label=ready completion=Setup
   end_ts=$(date +%s)
   elapsed=$(( end_ts - VM_INIT_START_TS ))
 
   if [[ "$VM_INIT_VERIFY" == "1" ]]; then
     title="Verification"
+    completion="Verification"
   else
     title="Summary"
   fi
@@ -1574,10 +1588,18 @@ print_summary() {
         skip=$((skip + 1))
         if [[ "$VM_INIT_VERBOSE" == 1 ]]; then _summary_row "${_C_DIM}" "${_SYM_SKIP}" "$name" "$detail" "$secs"; fi
         ;;
+      needs_action)
+        action=$((action + 1))
+        _summary_row "${_C_YELLOW}" "Needs action" "$name" "$detail" "$secs"
+        ;;
       warned)
         warn=$((warn + 1))
-        if [[ "$detail" == 'not run after earlier failure' ]]; then failed_names+="${name},"; fi
-        _summary_row "${_C_YELLOW}" "Needs action" "$name" "$detail" "$secs"
+        _summary_row "${_C_YELLOW}" "Warnings" "$name" "$detail" "$secs"
+        ;;
+      not_run)
+        not_run=$((not_run + 1))
+        failed_names+="${name},"
+        _summary_row "${_C_DIM}" "Not run" "$name" "$detail" "$secs"
         ;;
       failed)
         fail=$((fail + 1))
@@ -1590,8 +1612,12 @@ print_summary() {
   if (( skip > 0 )); then printf '  Not selected: %d modules (use --list-modules for details)\n' "$skip"; fi
   echo ""
   print_rule 60
-  printf "  ${_C_GREEN}ok${_C_RESET}: %d   ${_C_DIM}skipped${_C_RESET}: %d   ${_C_YELLOW}warned${_C_RESET}: %d   ${_C_RED}failed${_C_RESET}: %d   ${_C_DIM}elapsed: %s${_C_RESET}\n" \
-    "$ok" "$skip" "$warn" "$fail" "$(format_duration "$elapsed")"
+  if [[ "$VM_INIT_DRY_RUN" == 1 ]]; then ready_label=planned; fi
+  printf "  ${_C_GREEN}%s${_C_RESET}: %d   ${_C_YELLOW}needs action${_C_RESET}: %d   ${_C_YELLOW}warned${_C_RESET}: %d   ${_C_RED}failed${_C_RESET}: %d\n" \
+    "$ready_label" "$ok" "$action" "$warn" "$fail"
+  printf "  ${_C_DIM}skipped: %d" "$skip"
+  if (( not_run > 0 )); then printf '   not run: %d' "$not_run"; fi
+  printf "   elapsed: %s${_C_RESET}\n" "$(format_duration "$elapsed")"
 
   if [[ -n "${VM_INIT_TALLY_FILE:-}" && -f "${VM_INIT_TALLY_FILE}" ]]; then
     local installed_tools=0 upgraded_tools=0 current_tools=0
@@ -1611,7 +1637,7 @@ print_summary() {
   print_next_steps
 
   if [[ "$VM_INIT_DRY_RUN" != 1 && "$VM_INIT_VERIFY" != 1 ]]; then state_set last.failed "${failed_names%,}"; fi
-  if (( fail > 0 )); then
+  if (( fail > 0 || not_run > 0 )); then
     echo ""
     if [[ "$VM_INIT_VERIFY" == "1" ]]; then
       echo -e "  ${_C_RED}${_C_BOLD}${_SYM_FAIL} Some modules did not verify.${_C_RESET}"
@@ -1619,7 +1645,7 @@ print_summary() {
     else
       echo -e "  ${_C_RED}${_C_BOLD}${_SYM_FAIL} Some modules failed.${_C_RESET} Review output above or in the log file."
       # Name the exact re-run rather than leaving the reader to reconstruct it.
-      echo -e "  ${_C_DIM}Re-run just what failed:${_C_RESET}  ${_C_CYAN}$(retry_command apply "${failed_names%,}")${_C_RESET}"
+      echo -e "  ${_C_DIM}Retry failed and unfinished modules:${_C_RESET}  ${_C_CYAN}$(retry_command apply "${failed_names%,}")${_C_RESET}"
       echo -e "  ${_C_DIM}Check current state:${_C_RESET}      ${_C_CYAN}$(retry_command status)${_C_RESET}"
     fi
     return 1
@@ -1631,23 +1657,25 @@ print_summary() {
     return 0
   fi
 
-  if (( warn > 0 )); then
-    echo ""
-    echo -e "  ${_C_YELLOW}${_SYM_WARN} Completed with warnings.${_C_RESET} Review output for details."
-  fi
-
-  if [[ "$VM_INIT_VERIFY" == "1" ]]; then
-    echo ""
-    log_done "Verification complete."
-    return 0
-  fi
-
   echo ""
-  log_done "Setup complete."
-  echo -e "  Verify at any time with: ${_C_CYAN}${_C_BOLD}$(retry_command status)${_C_RESET}"
+  if (( action > 0 )); then
+    local module_word=modules
+    if (( action == 1 )); then module_word=module; fi
+    echo -e "  ${_C_YELLOW}${_SYM_WARN} ${completion} finished; action required for ${action} ${module_word}.${_C_RESET} See Required actions above."
+  elif (( warn > 0 )) || [[ -n "$(vm_init_notes | awk -F '\t' '$1 == "warning"')" ]]; then
+    echo -e "  ${_C_YELLOW}${_SYM_WARN} ${completion} completed with warnings.${_C_RESET} See Warnings above."
+  else
+    log_done "${completion} complete."
+  fi
+  if [[ "$VM_INIT_VERIFY" != 1 || "$action" != 0 ]]; then
+    local verify_label='Verify at any time with'
+    if (( action > 0 )); then verify_label='After completing the actions, verify with'; fi
+    echo -e "  ${verify_label}: ${_C_CYAN}${_C_BOLD}$(retry_command status)${_C_RESET}"
+  fi
   return 0
 }
 
+reconcile_firewall_result
 if [[ "$VM_INIT_JSON" == 1 ]]; then
   print_json_summary
 else

@@ -264,7 +264,7 @@ YAML
   cd "$workdir"
   run "$VM_INIT_SH" --dry-run
   [ "$status" -eq 0 ]
-  [[ "$output" == *"ok: 1"* ]]
+  [[ "$output" == *"planned: 1"* ]]
   [[ "$output" == *"skipped: 10"* ]]
 }
 
@@ -280,7 +280,7 @@ YAML
 @test "--only filters to a single module" {
   run "$VM_INIT_SH" --dry-run --only dns --config "$CONFIG"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"ok: 1"* ]]
+  [[ "$output" == *"planned: 1"* ]]
   [[ "$output" == *"skipped: 10"* ]]
 }
 
@@ -300,7 +300,7 @@ YAML
 @test "--only accepts comma-separated list" {
   run "$VM_INIT_SH" --dry-run --only apt,dns --config "$CONFIG"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"ok: 2"* ]]
+  [[ "$output" == *"planned: 2"* ]]
   [[ "$output" == *"skipped: 9"* ]]
 }
 

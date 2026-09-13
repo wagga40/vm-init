@@ -53,7 +53,13 @@ sudo vm-init apply --config ./team.yml --skip github_releases --no-upgrade
 vm-init --list-modules --config ./team.yml
 ```
 
-Progress counts selected modules only. Disabled modules are collapsed into one summary line; use `--verbose` or `--list-modules` for details. Long quiet commands print a periodic “Still working” message. Results use **Planned**, **Ready**, **Needs action**, and **Failed**, followed by the relevant next steps.
+Progress counts selected modules only. Disabled modules are collapsed into one summary line; use `--verbose` or `--list-modules` for details. Long quiet commands print a periodic “Still working” message.
+
+The summary distinguishes **Ready** (completed), **Warnings** (completed with caveats), **Needs action** (an explicit step remains), **Failed**, and **Not run** (stopped by an earlier failure). Dry runs show **Planned**. Each module is counted once; failures take precedence over actions, and actions over warnings. Warning details remain visible even when a module also needs action.
+
+Follow-ups are grouped into **Required actions**, **Warnings**, **Session changes**, and **Notes**, with the module named beside each message. Firewall confirmation, alias conflicts, and pending reboots need action. Starting a new shell session or activating Docker group membership is a session reminder; a DNS recovery tip is informational. Neither reminder makes a ready module warn. The final result reports success, warnings, or outstanding actions once, without a green “Setup complete” after warnings or required actions.
+
+`status --json` uses the same distinction: `warned` has `observed_state: "warnings"`, while `needs_action` has `observed_state: "needs_action"`. Its `messages` array includes each message's `kind`, `module`, `summary`, and `message`. Warnings and pending actions still exit successfully; failures exit nonzero.
 
 On Ubuntu, plans show installed and candidate APT versions from the local cache. Applying may refresh that cache and resolve additional dependencies, so these versions are an estimate. Shell plans also list the managed file for each account.
 

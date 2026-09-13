@@ -102,6 +102,9 @@ teardown() { cleanup_test_tmpdir; }
   run "$fixture/vm-init.sh" apply --config "$CONFIG" --fail-fast --no-log
   [ "$status" -eq 1 ]
   [ ! -f "$TEST_TMPDIR/python-ran" ]
+  [[ "$output" == *'Not run'* ]]
+  [[ "$output" == *'not run: 1'* ]]
+  [[ "$output" != *'Needs action'* ]]
   grep -qx 'last.failed=apt,python' "$VM_INIT_STATE_FILE"
   echo 'install_apt() { return 0; }' > "$fixture/modules/apt.sh"
   echo '{}' > "$CONFIG"

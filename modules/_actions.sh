@@ -126,7 +126,7 @@ confirm_setup_plan() {
 }
 
 print_json_summary() {
-  local i rows='[]' status
+  local i rows='[]' status messages
   for ((i=0; i<${#VM_INIT_MODULE_NAMES[@]}; i++)); do
     status="${VM_INIT_MODULE_STATUS[$i]}"
     rows=$(jq --arg name "${VM_INIT_MODULE_NAMES[$i]}" --arg status "$status" \
@@ -134,10 +134,12 @@ print_json_summary() {
       --arg last "$(state_get "module.${VM_INIT_MODULE_NAMES[$i]}.status" 2>/dev/null || true)" \
       '. + [{name:$name,status:$status,detail:$detail,elapsed_seconds:($elapsed|tonumber),last_outcome:$last,
         desired_state:(if $status == "skipped" then "not_managed" else "managed" end),
-        observed_state:({ok:"healthy",warned:"needs_action",failed:"drifted",skipped:"not_checked"}[$status])}]' <<< "$rows")
+        observed_state:({ok:"healthy",warned:"warnings",needs_action:"needs_action",failed:"drifted",skipped:"not_checked",not_run:"not_checked"}[$status])}]' <<< "$rows")
   done
+  messages=$(vm_init_notes | jq -Rn '[inputs | split("\t") | {kind:.[0],module:.[1],summary:.[2],message:.[3]}]')
   jq -n --arg version "$VM_INIT_VERSION" --arg run "$VM_INIT_RUN_ID" \
     --arg config "${VM_INIT_SOURCE_CONFIG:-embedded}" --arg fingerprint "${VM_INIT_CONFIG_FINGERPRINT:-}" \
-    --argjson modules "$rows" '{schema_version:1,version:$version,run_id:$run,config:$config,config_sha256:$fingerprint,modules:$modules}' >&3
-  ! jq -e 'any(.[]; .status == "failed")' <<< "$rows" >/dev/null
+    --argjson modules "$rows" --argjson messages "$messages" \
+    '{schema_version:1,version:$version,run_id:$run,config:$config,config_sha256:$fingerprint,modules:$modules,messages:$messages}' >&3
+  ! jq -e 'any(.[]; .status == "failed" or .status == "not_run")' <<< "$rows" >/dev/null
 }

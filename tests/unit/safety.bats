@@ -185,7 +185,7 @@ PY
     [ ! -e "$VM_INIT_DNS_ROOT/etc/systemd/system/dnsproxy.service" ]
     [[ "$output" == *'Previous DNS configuration restored'* ]]
     [[ "$output" != *'DNS routing verified through'* ]]
-    [ ! -s "$VM_INIT_NOTES_FILE" ]
+    ! grep -Eq '^(info|session|action)' "$VM_INIT_NOTES_FILE"
   done
 }
 

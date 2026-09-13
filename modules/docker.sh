@@ -35,7 +35,7 @@ https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
     [[ "$user" != root ]] || continue
     if ! id -nG "$user" | tr ' ' '\n' | grep -qx docker; then
       usermod -aG docker "$user" || return 1
-      vm_init_note "Log out and back in for ${user}'s docker group membership to apply."
+      vm_init_note "Log out and back in for ${user}'s docker group membership to apply." session
     fi
   done
 
